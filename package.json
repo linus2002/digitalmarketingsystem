@@ -1,0 +1,28 @@
+{
+  "name": "getmeds-marketing-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Digital marketing automation and healthcare inquiry assistant (React + Express + PostgreSQL + Ollama)",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c green,blue \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w server && npm run build -w client",
+    "start": "npm run start -w server",
+    "db:local": "node scripts/local-db.mjs",
+    "db:setup": "npm run db:setup -w server",
+    "db:migrate": "npm run db:migrate -w server",
+    "db:seed": "npm run db:seed -w server",
+    "gen:keys": "node scripts/gen-keys.mjs",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "embedded-postgres": "^17.5.0-beta.15"
+  },
+  "engines": {
+    "node": ">=20.11"
+  }
+}
