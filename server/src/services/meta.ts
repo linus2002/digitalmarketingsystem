@@ -102,7 +102,16 @@ export async function graph<T = unknown>(
       transient = false;
       uncertain = true;
     }
-    const msg = e?.message ?? `Facebook returned HTTP ${res.status}`;
+    let msg = e?.message ?? `Facebook returned HTTP ${res.status}`;
+    // Code 190 = the access token is no longer valid (expired, password changed, access removed). Say what to do.
+    if (e?.code === 190) {
+      msg =
+        e.error_subcode === 463
+          ? "The Facebook Page token has expired. Get a new one and paste it in Settings → Facebook connection."
+          : e.error_subcode === 460
+            ? "The Facebook Page token stopped working because the Facebook password was changed. Get a new token and paste it in Settings → Facebook connection."
+            : "The Facebook Page token isn't valid any more. Get a new one and paste it in Settings → Facebook connection.";
+    }
     throw new MetaError(uncertain ? `${msg}. It may have been posted anyway. Check the Page before retrying, to avoid a duplicate.` : msg, e?.code, e?.error_subcode, transient, data, uncertain);
   }
   return data as T;

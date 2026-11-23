@@ -1,19 +1,19 @@
 /* No backdrop-filter on .appbar: it would make the bar the containing block for position:fixed children (modals, phone popovers). */
 /* ---- Top navigation bar: notes, notifications, user menu ---- */
 .app-col { min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
-.appbar { position: sticky; top: 0; z-index: 30; height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 36px; background: var(--canvas); border-bottom: 1px solid var(--rule); }
+.appbar { position: sticky; top: 0; z-index: 30; height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 36px; background: var(--canvas); border-bottom: 1px solid var(--rule); }
 .appbar-start { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.appbar-date { color: var(--ink-3); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.appbar-date { color: var(--ink-3); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .appbar-brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; white-space: nowrap; }
 .appbar-brand .mark { width: 30px; height: 30px; border-radius: 50%; background: var(--primary); color: #fff; display: grid; place-items: center; font-size: 11px; font-weight: 700; }
-.appbar-end { display: flex; align-items: center; gap: 6px; }
-.appbar-sep { width: 1px; height: 28px; background: var(--rule); margin: 0 6px; }
+.appbar-end { display: flex; align-items: center; gap: 2px; }
+.appbar-sep { width: 1px; height: 22px; background: var(--rule); margin: 0 4px; }
 
 .tb-wrap { position: relative; }
-.tb-btn { position: relative; width: 42px; height: 42px; border-radius: 50%; border: 0; background: transparent; color: var(--ink-2); display: grid; place-items: center; cursor: pointer; }
-.tb-btn svg { width: 21px; height: 21px; }
+.tb-btn { position: relative; width: 36px; height: 36px; border-radius: 50%; border: 0; background: transparent; color: var(--ink-2); display: grid; place-items: center; cursor: pointer; }
+.tb-btn svg { width: 18px; height: 18px; }
 .tb-btn:hover, .tb-btn[aria-expanded=true] { background: var(--mint); color: var(--ink); }
-.tb-badge { position: absolute; top: 3px; right: 2px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: var(--r-pill); background: var(--red); color: #fff; font-size: 11px; font-weight: 600; display: grid; place-items: center; border: 2px solid #fff; line-height: 1; }
+.tb-badge { position: absolute; top: 1px; right: 0; min-width: 17px; height: 17px; padding: 0 4px; border-radius: var(--r-pill); background: var(--red); color: #fff; font-size: 10px; font-weight: 600; display: grid; place-items: center; border: 2px solid #fff; line-height: 1; }
 .tb-badge.soft { background: var(--primary); }
 
 /* initials avatar */
@@ -22,9 +22,9 @@
 .tb-avatar-btn:hover .ini-av, .tb-avatar-btn[aria-expanded=true] .ini-av { box-shadow: 0 0 0 3px var(--blue-soft-2); }
 
 /* popovers */
-.tb-pop { position: absolute; right: 0; top: calc(100% + 10px); z-index: 60; background: var(--canvas); border: 1px solid var(--rule); border-radius: 18px; box-shadow: 0 18px 48px rgba(20, 30, 60, .16); animation: rise .14s ease-out; }
+.tb-pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 60; background: var(--canvas); border: 1px solid var(--rule); border-radius: 18px; box-shadow: 0 18px 48px rgba(20, 30, 60, .16); animation: rise .14s ease-out; }
 .tb-pop-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--rule); }
-.tb-pop-head b { font-size: 15px; }
+.tb-pop-head b { font-size: 15px; font-weight: 500; }
 .tb-pop-foot { padding: 10px 18px; border-top: 1px solid var(--rule); text-align: center; }
 
 .tb-notif { width: 400px; }
@@ -68,9 +68,9 @@
 .notes-empty { text-align: center; padding: 22px 0 8px; }
 
 @media (max-width: 960px) {
-  .appbar { padding: 0 10px 0 6px; height: 58px; }
+  .appbar { padding: 0 10px 0 6px; height: 50px; }
   .appbar-date { display: none; }
-  .tb-pop { position: fixed; left: 10px; right: 10px; top: 64px; width: auto; }
+  .tb-pop { position: fixed; left: 10px; right: 10px; top: 56px; width: auto; }
 }
 @media (max-width: 760px) {
   .notes-add { grid-template-columns: 1fr; }

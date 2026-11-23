@@ -57,7 +57,7 @@ function usePopover(open: boolean, close: () => void, wrap: RefObject<HTMLElemen
 }
 
 /** Initials in a solid circle, like the account button in most web apps. */
-export function InitialsAvatar({ name, size = 38 }: { name?: string | null; size?: number }) {
+export function InitialsAvatar({ name, size = 32 }: { name?: string | null; size?: number }) {
   return (
     <span className="ini-av" style={{ width: size, height: size, fontSize: Math.round(size * 0.36) }} aria-hidden="true">
       {initials(name)}

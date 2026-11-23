@@ -519,7 +519,8 @@ export async function writeCaption(item: Row, opts: { rules?: CaptionRules; batc
   ].slice(0, rules.keywordCount);
   const aiTags = rules.hashtags ? [...(Array.isArray(out.hashtags) ? out.hashtags.map(String) : []), ...inlineTags] : [];
   const seen = new Set<string>();
-  const hashtags = [...aiTags, ...brand.alwaysHashtags]
+  // Brand hashtags first, so the 8-tag limit can never cut them off.
+  const hashtags = [...brand.alwaysHashtags, ...aiTags]
     .map((t) => t.trim().replace(/\s+/g, ""))
     .filter((t) => t.length > 1)
     .map((t) => (t.startsWith("#") ? t : `#${t}`))
