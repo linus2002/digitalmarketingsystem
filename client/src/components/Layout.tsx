@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { Icon, type IconName } from "./Icons";
 import { TopBar } from "./TopBar";
@@ -60,6 +60,36 @@ function sessionSet(key: string, v: string) {
   }
 }
 
+type BadgeKind = "test" | "ai";
+
+/** A small outlined icon with overlapping colored dots (brand blue, green and a yellow-to-red blend) for the notices. */
+function BannerBadge({ kind }: { kind: BadgeKind }) {
+  const grad = `sysb-${useId().replace(/:/g, "")}`;
+  return (
+    <svg className="sys-badge" viewBox="0 0 36 36" aria-hidden="true">
+      <defs>
+        <linearGradient id={grad} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="var(--yellow)" />
+          <stop offset="1" stopColor="var(--red)" />
+        </linearGradient>
+      </defs>
+      <g fill="#fff" stroke="var(--ink)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        {kind === "test" ? (
+          <>
+            <path d="M19.5 4v9l-6.8 12.4A3 3 0 0 0 15.3 30h13.4a3 3 0 0 0 2.6-4.6L24.5 13V4" />
+            <path d="M17.5 4h9M15.6 21h12.8" fill="none" />
+          </>
+        ) : (
+          <path d="M23 4.5c1 5.6 3.4 8 9 9-5.6 1-8 3.4-9 9-1-5.6-3.4-8-9-9 5.6-1 8-3.4 9-9z" />
+        )}
+      </g>
+      <circle cx="8" cy="15" r="5" fill="var(--blue)" />
+      <circle cx="9" cy="24" r="5" fill="var(--green)" />
+      <circle cx="15.5" cy="27.5" r="4.5" fill={`url(#${grad})`} stroke="#fff" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
 /** Slim notices about how the system is set up: Test mode, AI not ready. Each can be hidden for this browser session. */
 function StatusBanner({ status, isAdmin }: { status: SystemStatus | null; isAdmin: boolean }) {
   const [hidden, setHidden] = useState<Record<string, boolean>>(() => ({
@@ -74,32 +104,38 @@ function StatusBanner({ status, isAdmin }: { status: SystemStatus | null; isAdmi
   const test = status.publishTestMode || status.messengerTestMode;
   const testText =
     status.publishTestMode && status.messengerTestMode
-      ? "Test mode: posts and replies aren't sent to Facebook."
+      ? "Posts and Messenger replies aren't sent to Facebook."
       : status.publishTestMode
-        ? "Test mode: posts aren't sent to Facebook."
-        : "Test mode: Messenger replies aren't sent to Facebook.";
-  const notices: { key: string; tone: "info" | "warn"; text: string; link?: { to: string; label: string } }[] = [];
-  if (test && !hidden.test) notices.push({ key: "test", tone: "info", text: testText, link: isAdmin ? { to: "/settings", label: "Settings" } : undefined });
+        ? "Posts aren't sent to Facebook."
+        : "Messenger replies aren't sent to Facebook.";
+  const notices: { key: string; tone: "info" | "warn"; badge: BadgeKind; title: string; text: string; link?: { to: string; label: string } }[] = [];
+  if (test && !hidden.test)
+    notices.push({ key: "test", tone: "info", badge: "test", title: "Test mode is on", text: testText, link: isAdmin ? { to: "/settings", label: "Settings" } : undefined });
   if (!status.ai.ready && !hidden.ai)
     notices.push({
       key: "ai",
       tone: "warn",
-      text: `${status.ai.label} isn't ready${status.ai.problem ? `: ${status.ai.problem}` : "."} ${status.ai.fix ?? ""}`.trim(),
+      badge: "ai",
+      title: `${status.ai.label} isn't ready`,
+      text: `${status.ai.problem ?? ""} ${status.ai.fix ?? ""}`.trim() || "The bots can't write until it's running.",
     });
   if (!notices.length) return null;
   return (
     <div className="sys-banners">
       {notices.map((n) => (
         <div key={n.key} className={`sys-banner ${n.tone}`} role="status">
-          <Icon name={n.tone === "warn" ? "alert" : "info"} />
-          <span className="grow">
-            {n.text}
-            {n.link && (
-              <>
-                {" "}
-                <Link to={n.link.to}>{n.link.label}</Link>
-              </>
-            )}
+          <BannerBadge kind={n.badge} />
+          <span className="grow sys-body">
+            <strong className="sys-title">{n.title}</strong>
+            <span className="sys-text">
+              {n.text}
+              {n.link && (
+                <>
+                  {" "}
+                  <Link to={n.link.to}>{n.link.label}</Link>
+                </>
+              )}
+            </span>
           </span>
           <button type="button" className="sys-x" aria-label="Hide this notice" onClick={() => hide(n.key)}>
             <Icon name="x" size={14} />
