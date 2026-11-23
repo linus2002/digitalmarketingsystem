@@ -1,0 +1,22 @@
+/* ---- Image / video upload ---- */
+.media-up { display: grid; gap: 6px; }
+.media-up .lab-sm { margin-bottom: 0; }
+.media-drop { display: flex; gap: 14px; align-items: center; padding: 16px 18px; border: 1.5px dashed var(--outline); border-radius: 18px; background: var(--bench); transition: border-color .15s, background .15s; }
+.media-drop.over { border-color: var(--primary); background: var(--mint); }
+.media-drop.off { opacity: .6; }
+.media-drop b { font-weight: 500; }
+.media-drop .bar { margin-top: 8px; }
+.media-ico { flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--blue-soft); color: var(--primary); display: grid; place-items: center; transform: rotate(180deg); }
+.media-ico svg { width: 18px; height: 18px; }
+.media-hint { display: block; font-size: 12.5px; color: var(--ink-3); margin-top: 2px; }
+.media-err { font-size: 12.5px; color: var(--bad); margin-left: 4px; }
+.media-card { border: 1px solid var(--rule); border-radius: 16px; overflow: hidden; background: var(--canvas); }
+.media-card .media-prev { display: block; width: 100%; max-height: 320px; object-fit: contain; background: #f1f2f6; border: 0; border-radius: 0; }
+.media-card .bar { margin: 0; border-radius: 0; }
+.media-meta { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 14px; font-size: 13px; }
+.media-meta > svg { width: 16px; height: 16px; color: var(--ink-3); flex: none; }
+.media-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-meta em { font-style: normal; color: var(--ink-3); }
+.media-prev { display: block; width: 100%; border-radius: 12px; border: 1px solid var(--rule); background: #f1f2f6; }
+.media-thumb { width: 64px; height: 64px; flex: none; object-fit: cover; border-radius: 10px; border: 1px solid var(--rule); background: #f1f2f6; }
+.link-toggle { justify-self: start; font-size: 13px; }

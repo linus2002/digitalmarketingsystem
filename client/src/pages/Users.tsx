@@ -14,15 +14,6 @@ interface U {
   last_login_at: string | null;
 }
 
-const ROLE_HELP: Record<string, string> = {
-  admin: "Everything, including users, settings and deleting personal data.",
-  marketing_manager: "Approves, schedules and publishes posts; campaigns; analytics.",
-  marketer: "Writes posts and uses the AI studio; can't approve or publish.",
-  pharma_team: "Sees all inquiries, reviews sensitive ones, approves replies and templates.",
-  lead_agent: "Handles their own and unassigned inquiries; sensitive replies need approval.",
-  viewer: "Read-only marketing dashboards and reports.",
-};
-
 export function UsersPage() {
   const { user: me, refresh } = useAuth();
   const toast = useToast();
@@ -36,8 +27,9 @@ export function UsersPage() {
     setBusy(true);
     setErr(null);
     try {
-      if (edit.id) await api(`/users/${edit.id}`, { method: "PATCH", body: { name: edit.name, role: edit.role, is_active: edit.is_active, password: edit.password || undefined } });
-      else await api("/users", { body: { email: edit.email, name: edit.name, role: edit.role, password: edit.password } });
+      // Everyone is an administrator: the role isn't chosen here any more (the server makes new users admins).
+      if (edit.id) await api(`/users/${edit.id}`, { method: "PATCH", body: { name: edit.name, is_active: edit.is_active, password: edit.password || undefined } });
+      else await api("/users", { body: { email: edit.email, name: edit.name, password: edit.password } });
       toast.ok(edit.id ? "User updated" : "User added", edit.id ? undefined : "Share the password with them privately.");
       const self = edit.id === me?.id;
       setEdit(null);
@@ -54,7 +46,7 @@ export function UsersPage() {
   const roleLabel = (r: string) => data?.roles.find((x) => x.value === r)?.label ?? r;
   return (
     <>
-      <PageHead title="Users and roles" sub="Each person gets the least access their job needs." actions={<Button variant="primary" icon="plus" onClick={() => { setErr(null); setEdit({ role: "marketer", is_active: true }); }}>Add user</Button>} />
+      <PageHead title="Users" sub="Everyone you add is an administrator with full access to the system." actions={<Button variant="primary" icon="plus" onClick={() => { setErr(null); setEdit({ is_active: true }); }}>Add user</Button>} />
       {error && <LoadError error={error} retry={reload} />}
       {loading && !data && <Skeleton />}
       {data && (
@@ -118,7 +110,7 @@ export function UsersPage() {
             {err && <Alert tone="bad">{err}</Alert>}
             {!edit.id && <TextField label="Email" type="email" value={edit.email ?? ""} onChange={(e) => setEdit({ ...edit, email: e.target.value })} autoFocus />}
             <TextField label="Name" value={edit.name ?? ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
-            <SelectField label="Role" value={edit.role ?? "marketer"} onChange={(e) => setEdit({ ...edit, role: e.target.value })} options={data?.roles ?? []} hint={ROLE_HELP[edit.role ?? "marketer"]} disabled={edit.id === me?.id} />
+            {!edit.id && <Alert tone="info">They'll be an administrator, with the same full access as you.</Alert>}
             <TextField
               label={edit.id ? "New password" : "Password"}
               optional={!!edit.id}

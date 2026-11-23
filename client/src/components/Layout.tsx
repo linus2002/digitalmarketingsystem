@@ -226,7 +226,7 @@ export function Layout() {
       title: "Admin",
       items: [
         { to: "/settings", label: "Settings", icon: "settings", anyOf: ["settings.manage", "settings.brand"] },
-        { to: "/users", label: "Users & roles", icon: "users", perm: "users.manage" },
+        { to: "/users", label: "Users", icon: "users", perm: "users.manage" },
         { to: "/logs/audit", label: "Audit log", icon: "shield", perm: "audit.view" },
       ],
     },

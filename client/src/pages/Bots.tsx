@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { MediaUpload, mediaSrc, type UploadedMedia } from "../components/MediaUpload";
 import { Link } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -59,6 +60,7 @@ interface Item {
   brief: string;
   media_type: "none" | "image" | "video";
   media_url: string | null;
+  media_id?: number | null;
   caption: string | null;
   keywords: string[];
   hashtags: string[];
@@ -859,8 +861,9 @@ function AddPosts({ batchId, disabled, onAdded }: { batchId: number; disabled: b
   const [mode, setMode] = useState<"one" | "many">("one");
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState("");
-  const [mediaType, setMediaType] = useState<"none" | "image" | "video">("none");
+  const [mediaType, setMediaType] = useState<"none" | "upload" | "image" | "video">("none");
   const [url, setUrl] = useState("");
+  const [uploaded, setUploaded] = useState<UploadedMedia | null>(null);
   const [lines, setLines] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -883,9 +886,11 @@ function AddPosts({ batchId, disabled, onAdded }: { batchId: number; disabled: b
         : undefined;
   const canAdd = mode === "one" ? !!brief.trim() && !briefErr : many.length > 0 && !manyErr;
 
-  function pickMedia(v: "none" | "image" | "video") {
+  function pickMedia(v: "none" | "upload" | "image" | "video") {
     setMediaType(v);
-    if (v === "none") setUrl(""); // nothing hidden is sent
+    // Nothing hidden is sent: switching away clears the other kind of media.
+    if (v !== "image" && v !== "video") setUrl("");
+    if (v !== "upload") setUploaded(null);
   }
 
   async function add() {
@@ -893,13 +898,23 @@ function AddPosts({ batchId, disabled, onAdded }: { batchId: number; disabled: b
     try {
       const items =
         mode === "one"
-          ? [{ title, brief, media_type: mediaType !== "none" && url.trim() ? mediaType : "none", media_url: mediaType !== "none" && url.trim() ? url.trim() : null }]
+          ? [
+              mediaType === "upload" && uploaded
+                ? { title, brief, media_type: uploaded.kind, media_id: uploaded.id }
+                : {
+                    title,
+                    brief,
+                    media_type: (mediaType === "image" || mediaType === "video") && url.trim() ? mediaType : "none",
+                    media_url: (mediaType === "image" || mediaType === "video") && url.trim() ? url.trim() : null,
+                  },
+            ]
           : many;
       const r = await api<Omit<BatchData, "schedule" | "run">>(`/bots/batches/${batchId}/items`, { body: { items } });
       toast.ok(`Added ${items.length} post${items.length === 1 ? "" : "s"}`);
       setTitle("");
       setBrief("");
       setUrl("");
+      setUploaded(null);
       setMediaType("none");
       setLines("");
       onAdded(r);
@@ -944,12 +959,13 @@ function AddPosts({ batchId, disabled, onAdded }: { batchId: number; disabled: b
                 onChange={pickMedia}
                 options={[
                   { value: "none", label: "None" },
-                  { value: "image", label: "Image" },
-                  { value: "video", label: "Video" },
+                  { value: "upload", label: "Upload" },
+                  { value: "image", label: "Image link" },
+                  { value: "video", label: "Video link" },
                 ]}
               />
             </div>
-            {mediaType !== "none" && (
+            {(mediaType === "image" || mediaType === "video") && (
               <TextField
                 label={`${mediaType === "video" ? "Video" : "Image"} link`}
                 value={url}
@@ -959,6 +975,7 @@ function AddPosts({ batchId, disabled, onAdded }: { batchId: number; disabled: b
               />
             )}
           </div>
+          {mediaType === "upload" && <MediaUpload value={uploaded} onChange={setUploaded} label="Upload an image or video" />}
         </>
       ) : (
         <TextArea
@@ -994,6 +1011,7 @@ function ItemCard({ it, n, checked, last, locked, onMove, onEdit, onDelete }: { 
       <div className="spread">
         <div className="row" style={{ gap: 10, minWidth: 0, flex: 1 }}>
           <span className="item-n">{n}</span>
+          {it.media_id && it.media_type === "image" && <img className="media-thumb" src={mediaSrc(it.media_id)} alt="" />}
           <b className="grow" style={{ overflowWrap: "anywhere" }}>{it.title || it.brief.slice(0, 70) || "Untitled"}</b>
         </div>
         <div className="row" style={{ gap: 6 }}>
@@ -1004,7 +1022,7 @@ function ItemCard({ it, n, checked, last, locked, onMove, onEdit, onDelete }: { 
           ) : (
             <Tag tone="mute">Handed off, post deleted</Tag>
           )}
-          {it.media_type !== "none" && <Tag tone="outline">{it.media_type === "video" ? "Video" : "Image"}</Tag>}
+          {it.media_type !== "none" && <Tag tone="outline">{(it.media_type === "video" ? "Video" : "Image") + (it.media_id ? " (uploaded)" : " link")}</Tag>}
         </div>
       </div>
       <p className="meta mt8 mb0">
@@ -1062,6 +1080,7 @@ function EditItemModal({ item, aiReady, onClose, onSaved }: { item: Item; aiRead
     brief: item.brief,
     media_type: item.media_type,
     media_url: item.media_url ?? "",
+    media: (item.media_id && item.media_type !== "none" ? { id: item.media_id, kind: item.media_type, name: "Uploaded file" } : null) as UploadedMedia | null,
     caption: item.caption ?? "",
     keywords: item.keywords.join(", "),
     hashtags: item.hashtags.join(" "),
@@ -1072,7 +1091,7 @@ function EditItemModal({ item, aiReady, onClose, onSaved }: { item: Item; aiRead
   const set = (k: keyof typeof f) => (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => setF((x) => ({ ...x, [k]: e.target.value }));
   const briefErr = f.brief.length > BRIEF_MAX ? `Keep it under ${BRIEF_MAX.toLocaleString("en")} characters (now ${f.brief.length.toLocaleString("en")}).` : undefined;
   const timeErr = f.at && !fromBizInput(f.at) ? "That isn't a valid date and time." : undefined;
-  const hasMedia = f.media_type !== "none" && !!f.media_url.trim();
+  const hasMedia = !f.media && f.media_type !== "none" && !!f.media_url.trim();
 
   async function save() {
     setBusy("save");
@@ -1082,8 +1101,9 @@ function EditItemModal({ item, aiReady, onClose, onSaved }: { item: Item; aiRead
         body: {
           title: f.title,
           brief: f.brief,
-          media_type: hasMedia ? f.media_type : "none",
-          media_url: hasMedia ? f.media_url.trim() : null,
+          ...(f.media
+            ? { media_id: f.media.id, media_type: f.media.kind, media_url: null }
+            : { media_id: null, media_type: hasMedia ? f.media_type : "none", media_url: hasMedia ? f.media_url.trim() : null }),
           caption: f.caption || null,
           keywords: f.keywords.split(",").map((k) => k.trim()).filter(Boolean),
           hashtags: f.hashtags.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean).map((h) => (h.startsWith("#") ? h : `#${h}`)),
@@ -1132,9 +1152,11 @@ function EditItemModal({ item, aiReady, onClose, onSaved }: { item: Item; aiRead
       <div className="stackv" style={{ gap: 14 }}>
         <TextField label="Working title" optional value={f.title} onChange={set("title")} />
         <TextArea label="What it's about" value={f.brief} onChange={set("brief")} rows={3} error={briefErr} />
+        <MediaUpload value={f.media} onChange={(m) => setF((x) => ({ ...x, media: m }))} label="Uploaded image or video" />
+        {!f.media && (
         <div className="grid g2">
           <SelectField
-            label="Media"
+            label="Or use a link"
             value={f.media_type}
             onChange={(e) => {
               const v = e.target.value as Item["media_type"];
@@ -1148,6 +1170,7 @@ function EditItemModal({ item, aiReady, onClose, onSaved }: { item: Item; aiRead
           />
           {f.media_type !== "none" && <TextField label="Link" value={f.media_url} onChange={set("media_url")} placeholder="https://…" />}
         </div>
+        )}
         <div className="spread">
           <p className="label mb0">Caption</p>
           <Button size="sm" variant="soft" icon="spark" loading={busy === "rewrite"} disabled={!!busy || !f.brief.trim() || !!briefErr || !aiReady} onClick={rewrite} title={aiReady ? undefined : "The AI isn't running"}>

@@ -4,3 +4,4 @@ dist/
 .localdb/
 *.log
 .DS_Store
+uploads/

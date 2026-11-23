@@ -22,7 +22,8 @@ usersRouter.get("/", requirePerm("users.manage"), async (_req, res) => {
 });
 
 usersRouter.post("/", requirePerm("users.manage"), async (req, res) => {
-  const b = parse(z.object({ email: z.string().email(), name: z.string().min(1).max(100), role: z.enum(ROLES), password: passwordRule }), req.body);
+  // Every new user is an administrator (single-role setup). The role system stays underneath for later.
+  const b = { ...parse(z.object({ email: z.string().email(), name: z.string().min(1).max(100), password: passwordRule }), req.body), role: "admin" as const };
   const user = await one(
     "INSERT INTO users (email, name, role, password_hash) VALUES ($1,$2,$3,$4) RETURNING id, email, name, role, is_active, created_at",
     [b.email.toLowerCase(), b.name, b.role, await bcrypt.hash(b.password, 12)],

@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { ago, BUSINESS_TZ_LABEL, fmtBiz, POST_STATUS } from "../lib/format";
+import { ago, bizToday, BUSINESS_TZ_LABEL, fmtBiz, POST_STATUS } from "../lib/format";
+import { ExportMenu, ImportModal, postsDoc, type ExportablePost } from "../components/ExportImport";
 import { Button, Empty, LinkButton, LoadError, PageHead, SearchInput, Skeleton, StatusTag, Tabs, Tag } from "../components/ui";
 import "../styles/posts.css";
 
@@ -101,6 +102,15 @@ export function PostsPage() {
   const c = counts.data?.counts ?? {};
   const n = (statuses: string) => (statuses ? statuses.split(",").reduce((s, k) => s + (c[k] ?? 0), 0) : Object.values(c).reduce((s, v) => s + v, 0));
   const linkState = { from: { to: `/posts${params.toString() ? `?${params.toString()}` : ""}`, label: "Posts" } };
+  const tableRef = useRef<HTMLDivElement>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const viewLabel = filter.view ? VIEWS[filter.view].label : "Filtered";
+  // Exports everything matching the current tab and search (up to 500), not just what fits on screen.
+  const buildExport = async () => {
+    const r = await api<{ posts: ExportablePost[] }>("/posts", { query: { status: filter.statuses, q, limit: 500 } });
+    const sub = `${viewLabel} posts${q ? ` matching "${q}"` : ""} · ${r.posts.length} post${r.posts.length === 1 ? "" : "s"} · exported ${fmtBiz(new Date().toISOString())} (${BUSINESS_TZ_LABEL})`;
+    return postsDoc(r.posts, "Posts", sub, `posts-${(filter.view ?? "filtered").toLowerCase()}-${bizToday()}`);
+  };
   const customLabel = !filter.view || filter.statuses !== VIEWS[filter.view].statuses ? filter.statuses.split(",").map((s) => POST_STATUS[s]?.label ?? s).join(", ") : null;
 
   return (
@@ -109,15 +119,32 @@ export function PostsPage() {
         title="Posts and approvals"
         sub="Every post goes draft → review → approved → scheduled. Editing an approved post sends it back for approval."
         actions={
-          can("posts.edit") && (
-            <LinkButton to="/posts/new" variant="primary" icon="plus">
-              New post
-            </LinkButton>
-          )
+          <>
+            <ExportMenu build={buildExport} pngTarget={() => tableRef.current} />
+            {can("posts.edit") && (
+              <Button icon="plus" onClick={() => setImportOpen(true)}>
+                Import
+              </Button>
+            )}
+            {can("posts.edit") && (
+              <LinkButton to="/posts/new" variant="primary" icon="plus">
+                New post
+              </LinkButton>
+            )}
+          </>
         }
       />
       <Tabs value={(filter.view ?? "") as View} onChange={setView} tabs={VIEW_KEYS.map((v) => ({ value: v, label: VIEWS[v].label, n: n(VIEWS[v].statuses) }))} />
-      <div className="table-wrap mt16">
+      {importOpen && (
+        <ImportModal
+          onClose={() => setImportOpen(false)}
+          onDone={() => {
+            void reload();
+            void counts.reload();
+          }}
+        />
+      )}
+      <div className="table-wrap mt16" ref={tableRef}>
         <div className="toolbar">
           <SearchInput value={search} onChange={setSearch} placeholder="Search posts" />
           {customLabel && (

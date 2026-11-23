@@ -219,7 +219,16 @@ const itemBody = z.object({
   brief: z.string().max(BRIEF_MAX, `Keep what it's about under ${BRIEF_MAX.toLocaleString("en")} characters.`),
   media_type: z.enum(["none", "image", "video"]).default("none"),
   media_url: z.string().trim().max(1000).nullable().optional(),
+  /** An uploaded image or video (POST /api/media). Takes the place of media_url. */
+  media_id: z.number().int().positive().nullable().optional(),
 });
+
+/** The kind of an uploaded file, or 400 if it doesn't exist. */
+async function uploadedKind(id: number): Promise<"image" | "video"> {
+  const m = await one<{ kind: "image" | "video" }>("SELECT kind FROM media WHERE id=$1", [id]);
+  if (!m) throw badRequest("That uploaded file wasn't found. Upload it again.");
+  return m.kind;
+}
 
 botsRouter.post("/batches/:id/items", edit, async (req, res) => {
   const id = intParam(req.params.id);
@@ -231,14 +240,16 @@ botsRouter.post("/batches/:id/items", edit, async (req, res) => {
   if (count + items.length > 200) throw badRequest("A batch can hold up to 200 posts. Start a new batch for the rest.");
   await tx(async (c) => {
     for (const [i, it] of items.entries()) {
-      if (!it.brief.trim() && !it.media_url) throw badRequest(`Post ${i + 1}: say what it's about.`);
-      await q("INSERT INTO bot_items (batch_id, position, title, brief, media_type, media_url) VALUES ($1,$2,$3,$4,$5,$6)", [
+      if (!it.brief.trim() && !it.media_url && !it.media_id) throw badRequest(`Post ${i + 1}: say what it's about.`);
+      const uploaded = it.media_id ? await uploadedKind(it.media_id) : null;
+      await q("INSERT INTO bot_items (batch_id, position, title, brief, media_type, media_url, media_id) VALUES ($1,$2,$3,$4,$5,$6,$7)", [
         id,
         start + i + 1,
         it.title?.trim() ?? "",
         it.brief.trim(),
-        it.media_url ? it.media_type : "none",
-        it.media_url || null,
+        uploaded ?? (it.media_url ? it.media_type : "none"),
+        uploaded ? null : it.media_url || null,
+        it.media_id ?? null,
       ], c);
     }
     // New posts haven't been checked yet.
@@ -270,6 +281,11 @@ botsRouter.patch("/items/:id", edit, async (req, res) => {
     }),
     req.body,
   );
+  // An uploaded file replaces any link, and sets the media type from the file itself.
+  if (b.media_id) {
+    b.media_type = await uploadedKind(b.media_id);
+    b.media_url = null;
+  }
   const set: string[] = [];
   const params: unknown[] = [id];
   for (const [k, v] of Object.entries(b)) {

@@ -3,6 +3,7 @@ import { one, q, type Row } from "../lib/db.js";
 import { errMsg, log } from "../lib/logger.js";
 import { MetaError, publishToPage } from "./meta.js";
 import { BOT_NAMES, notify } from "./notifications.js";
+import { readMedia } from "./media.js";
 
 /** Minutes to wait before retry n (1-based): 1, 2, 4, 8, 16 … capped at 60. */
 export const backoffMinutes = (attempt: number) => Math.min(60, 2 ** Math.max(0, attempt - 1));
@@ -45,7 +46,15 @@ export async function publishOne(post: Row) {
       fbId = `dryrun_${post.id}_${Date.now()}`;
       raw = { dryRun: true };
     } else {
-      ({ id: fbId, raw } = await publishToPage({ message: composeMessage(post as { message: string; hashtags: string[] }), link: post.link_url, imageUrl: post.image_url, videoUrl: post.video_url }));
+      // An uploaded image/video is sent as a file; otherwise Facebook downloads it from the link.
+      const file = post.media_id ? await readMedia(post.media_id) : null;
+      ({ id: fbId, raw } = await publishToPage({
+        message: composeMessage(post as { message: string; hashtags: string[] }),
+        link: post.link_url,
+        imageUrl: file ? null : post.image_url,
+        videoUrl: file ? null : post.video_url,
+        file,
+      }));
     }
   } catch (err) {
     // Unknown errors (not from the Graph client) might have happened after sending: don't retry them.

@@ -414,7 +414,8 @@ export async function checkBatch(batchId: number, userId: number | null) {
     for (const text of checkContent(`${item.title} ${full}`, brand.bannedPhrases)) issues.push({ level: "warn", text });
     if (caption && brand.requiredDisclaimer && !full.includes(brand.requiredDisclaimer))
       issues.push({ level: "bad", text: 'The brand disclaimer is missing. Add it to the caption, or ask a marketing manager to turn on "Add the brand disclaimer" in Team rules.' });
-    const media = mediaProblem(item.media_url, item.media_type);
+    // An uploaded file is sent to Facebook directly: no link to check.
+    const media = item.media_id ? null : mediaProblem(item.media_url, item.media_type);
     if (media) issues.push(media);
 
     if (!item.scheduled_at) issues.push({ level: "bad", text: "No posting time yet." });
@@ -669,14 +670,14 @@ export async function handOff(batchId: number, user: { id: number; role: string 
       const at = new Date(it.scheduled_at);
       const post = await one<{ id: number }>(
         `INSERT INTO posts (title, message, hashtags, image_url, video_url, campaign_id, scheduled_at, ai_generated, source_topic, created_by, status,
-                            approved_by, approved_at, next_attempt_at, last_edited_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8,$9,$10,$11,$12,$13,$9) RETURNING id`,
+                            approved_by, approved_at, next_attempt_at, last_edited_by, media_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8,$9,$10,$11,$12,$13,$9,$14) RETURNING id`,
         [
           (it.title || message.split(/[.!?\n]/)[0]).slice(0, 200),
           message,
           it.hashtags ?? [],
-          it.media_type === "image" ? it.media_url : null,
-          it.media_type === "video" ? it.media_url : null,
+          it.media_type === "image" && !it.media_id ? it.media_url : null,
+          it.media_type === "video" && !it.media_id ? it.media_url : null,
           batch.campaign_id,
           at,
           `Bots: ${batch.name}`.slice(0, 300),
@@ -685,6 +686,7 @@ export async function handOff(batchId: number, user: { id: number; role: string 
           mode === "schedule" ? user.id : null,
           mode === "schedule" ? new Date() : null,
           mode === "schedule" ? at : null,
+          it.media_id ?? null,
         ],
         c,
       );

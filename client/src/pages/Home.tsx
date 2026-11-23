@@ -19,13 +19,8 @@ interface Dash {
 
 /** For administrators: is everything the team needs set up? Each line links to where it's fixed. */
 function SetupCard() {
-  const { data } = useLoad(
-    () => Promise.all([api<SystemStatus>("/status"), api<{ users: { is_active: boolean }[] }>("/users").catch(() => ({ users: [] }))]),
-    [],
-  );
-  if (!data) return null;
-  const [st, us] = data;
-  const people = us.users.filter((u) => u.is_active).length;
+  const { data: st } = useLoad(() => api<SystemStatus>("/status"), []);
+  if (!st) return null;
   const test = st.publishTestMode || st.messengerTestMode;
   const items: { ok: boolean | "info"; title: string; detail: string; to?: string; link?: string }[] = [
     {
@@ -48,13 +43,6 @@ function SetupCard() {
       detail: test
         ? `${st.publishTestMode ? "Posts" : ""}${st.publishTestMode && st.messengerTestMode ? " and " : ""}${st.messengerTestMode ? "Messenger replies" : ""} are logged, not sent. Set PUBLISH_DRY_RUN / MESSENGER_DRY_RUN to false in .env and restart to go live.`
         : "Set PUBLISH_DRY_RUN=true in .env to test safely.",
-    },
-    {
-      ok: people > 1,
-      title: people > 1 ? `${people} people have access` : "Only you have access so far",
-      detail: people > 1 ? "Give each person the least access their job needs." : "Add your marketing and pharmaceutical team.",
-      to: "/users",
-      link: people > 1 ? "Users and roles" : "Add users",
     },
   ];
   const todo = items.filter((i) => i.ok === false).length;

@@ -45,6 +45,8 @@ export async function graph<T = unknown>(
     method?: "GET" | "POST" | "DELETE";
     params?: Record<string, string | number | undefined>;
     body?: unknown;
+    /** Multipart form (file uploads). Takes the place of body. */
+    form?: FormData;
     token: string;
     host?: string;
     timeoutMs?: number;
@@ -57,14 +59,14 @@ export async function graph<T = unknown>(
   const proof = appSecretProof(opts.token);
   if (proof) url.searchParams.set("appsecret_proof", proof);
   const headers: Record<string, string> = { Authorization: `Bearer ${opts.token}` };
-  if (opts.body) headers["Content-Type"] = "application/json";
+  if (opts.body && !opts.form) headers["Content-Type"] = "application/json";
 
   let res: Response;
   try {
     res = await fetch(url, {
       method,
       headers,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      body: opts.form ?? (opts.body ? JSON.stringify(opts.body) : undefined),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
     });
   } catch (err) {
@@ -131,8 +133,46 @@ export async function checkConnection() {
   });
 }
 
-export async function publishToPage(post: { message: string; link?: string | null; imageUrl?: string | null; videoUrl?: string | null }): Promise<{ id: string; raw: unknown }> {
+export interface MediaFile {
+  kind: "image" | "video";
+  data: Buffer;
+  mime: string;
+  name: string;
+}
+
+/** Looks up the Page post id of an uploaded video (analytics are keyed by it). Never throws: the video is already posted. */
+async function videoPostId(pageId: string, token: string, videoId: string): Promise<string | undefined> {
+  try {
+    const v = await graph<{ id: string; post_id?: string }>(videoId, { token, params: { fields: "post_id" } });
+    return v.post_id ? (v.post_id.includes("_") ? v.post_id : `${pageId}_${v.post_id}`) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function publishToPage(post: {
+  message: string;
+  link?: string | null;
+  imageUrl?: string | null;
+  videoUrl?: string | null;
+  /** An uploaded file: sent to Facebook directly, so it doesn't have to be on a public website. */
+  file?: MediaFile | null;
+}): Promise<{ id: string; raw: unknown }> {
   const page = await requirePage();
+  if (post.file) {
+    const form = new FormData();
+    form.append("source", new Blob([new Uint8Array(post.file.data)], { type: post.file.mime }), post.file.name);
+    form.append("published", "true");
+    if (post.file.kind === "image") {
+      form.append("caption", post.message);
+      const r = await graph<{ id: string; post_id?: string }>(`${page.pageId}/photos`, { method: "POST", token: page.token, form, timeoutMs: 120_000 });
+      return { id: r.post_id ?? r.id, raw: r };
+    }
+    form.append("description", post.message);
+    const r = await graph<{ id: string }>(`${page.pageId}/videos`, { method: "POST", token: page.token, host: VIDEO_HOST, form, timeoutMs: 300_000 });
+    const postId = await videoPostId(page.pageId, page.token, r.id);
+    return { id: postId ?? r.id, raw: { ...r, post_id: postId ?? null } };
+  }
   if (post.videoUrl) {
     // Facebook downloads the video from this public URL itself. Uploads go to the video host.
     const r = await graph<{ id: string }>(`${page.pageId}/videos`, {
