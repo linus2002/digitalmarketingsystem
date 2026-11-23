@@ -1,11 +1,112 @@
-import { useEffect, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { ago, fmtDate, fmtNum, fromLocalInput, POST_STATUS, toLocalInput } from "../lib/format";
+import { ago, bizToday, BUSINESS_TZ_LABEL, fmtBiz, fmtDate, fmtNum, fromBizInput, POST_STATUS, toBizInput } from "../lib/format";
 import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icons";
 import { Alert, Avatar, Button, ConfirmModal, LoadError, Modal, PageHead, SelectField, Skeleton, StatusTag, Steps, Tag, TextArea, TextField } from "../components/ui";
+import "../styles/posts.css";
+
+// ---------------- Shared helpers for the posts pages ----------------
+
+export interface AppStatus {
+  ai?: unknown;
+  facebook?: { connected: boolean; pageName?: string };
+  publishTestMode?: boolean;
+  messengerTestMode?: boolean;
+  businessName?: string;
+}
+
+let statusCache: { at: number; p: Promise<AppStatus | null> } | null = null;
+
+/** GET /api/status, cached for a minute. null while loading or if it isn't available. */
+export function useAppStatus() {
+  const [s, setS] = useState<AppStatus | null>(null);
+  useEffect(() => {
+    let alive = true;
+    if (!statusCache || Date.now() - statusCache.at > 60_000) {
+      statusCache = {
+        at: Date.now(),
+        p: api<AppStatus>("/status").catch(() => {
+          statusCache = null;
+          return null;
+        }),
+      };
+    }
+    void statusCache.p.then((v) => alive && setS(v));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return s;
+}
+
+/** Where "back" goes: pages linking here may pass `state={{ from: { to, label } }}`. */
+export type FromState = { from?: { to: string; label: string } } | null;
+
+const PAGE_HOSTS = /(^|\.)(facebook\.com|fb\.watch|fb\.com|instagram\.com|youtube\.com|youtu\.be|vimeo\.com|tiktok\.com|drive\.google\.com|docs\.google\.com|dropbox\.com)$/i;
+const VIDEO_EXT = /\.(mp4|mov|m4v|webm)$/i;
+
+function isPrivateHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal") || h.endsWith(".lan")) return true;
+  if (!h.includes(".") && !h.includes(":")) return true;
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (h.includes(":")) return h === "::" || h === "::1" || /^f[cd]/.test(h) || /^fe[89ab]/.test(h) || h.startsWith("::ffff:");
+  return false;
+}
+
+/** Same rules as the server (server/src/routes/posts.ts mediaUrl). Returns a message, or null when fine/empty. */
+export function mediaProblem(kind: "image" | "video", raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null;
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return `That isn't a full web address. It should start with https://`;
+  }
+  if (u.protocol !== "https:") return `The ${kind} link must start with https://`;
+  if (u.username || u.password) return `The ${kind} link can't contain a username or password.`;
+  if (isPrivateHost(u.hostname)) return `The ${kind} link must be on a public website Facebook can reach (not localhost or a private network).`;
+  if (PAGE_HOSTS.test(u.hostname)) return `That's a link to a web page, not the ${kind} file itself. Use a direct link to the file.`;
+  if (kind === "video" && !VIDEO_EXT.test(u.pathname)) return "The video link must point directly to a .mp4, .mov, .m4v or .webm file.";
+  return null;
+}
+
+/** Message + hashtags as they'll be published (same whole-tag rule as the server's composeMessage). */
+export function composePreview(message: string, hashtags: string[]) {
+  const text = message.trim();
+  const present = new Set((text.match(/#[\p{L}\p{N}_]+/gu) ?? []).map((t) => t.toLowerCase()));
+  const tags: string[] = [];
+  for (const raw of hashtags) {
+    const h = raw.trim();
+    if (!h) continue;
+    const tag = h.startsWith("#") ? h : `#${h}`;
+    if (present.has(tag.toLowerCase())) continue;
+    present.add(tag.toLowerCase());
+    tags.push(tag);
+  }
+  return tags.length ? `${text}\n\n${tags.join(" ")}` : text;
+}
+
+/** A sensible default time on a Philippine day: 09:00, or the next full hour when that's already past today. */
+export function defaultSlot(day: string) {
+  if (day !== bizToday()) return `${day}T09:00`;
+  const phHour = new Date(Date.now() + 8 * 3_600_000).getUTCHours();
+  const h = Math.max(9, phHour + 1);
+  return h > 23 ? `${day}T23:30` : `${day}T${String(h).padStart(2, "0")}:00`;
+}
+
+const futureBizInput = (v: string | null | undefined) => toBizInput(v && new Date(v).getTime() > Date.now() + 60_000 ? v : new Date(Date.now() + 3600_000));
+
+// ---------------- Page ----------------
 
 interface Post {
   id: number;
@@ -13,6 +114,7 @@ interface Post {
   message: string;
   hashtags: string[];
   image_url: string | null;
+  video_url: string | null;
   image_prompt: string | null;
   link_url: string | null;
   campaign_id: number | null;
@@ -27,10 +129,13 @@ interface Post {
   fb_post_id: string | null;
   ai_generated: boolean;
   source_topic: string | null;
-  created_by: number;
+  created_by: number | null;
   created_by_name: string | null;
+  last_edited_by?: number | null;
+  last_edited_by_name?: string | null;
   approved_by_name: string | null;
   approved_at: string | null;
+  updated_at: string;
 }
 interface Detail {
   post: Post;
@@ -40,7 +145,13 @@ interface Detail {
   preview: string;
 }
 
+type Form = { title: string; message: string; hashtags: string; image_url: string; video_url: string; image_prompt: string; link_url: string; campaign_id: string; planned: string };
+
+const EMPTY: Form = { title: "", message: "", hashtags: "", image_url: "", video_url: "", image_prompt: "", link_url: "", campaign_id: "", planned: "" };
 const EDITABLE = ["draft", "changes_requested", "in_review", "approved", "scheduled", "failed"];
+/** Statuses where a content change sends the post back for approval (matches the server). */
+const RESETS_APPROVAL = ["approved", "scheduled", "in_review", "failed"];
+const DELETABLE = ["draft", "changes_requested", "cancelled", "failed"];
 const DECISION: Record<string, string> = {
   submitted: "Sent for review",
   approved: "Approved",
@@ -55,17 +166,39 @@ function stepIndex(status: string) {
   return { draft: 0, changes_requested: 0, in_review: 1, approved: 2, scheduled: 3, publishing: 3, failed: 3, published: 5, cancelled: 0 }[status] ?? 0;
 }
 
+const splitTags = (s: string) => s.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean).map((h) => (h.startsWith("#") ? h : `#${h}`));
+
+function formFrom(post: Post): Form {
+  return {
+    title: post.title,
+    message: post.message,
+    hashtags: post.hashtags.join(" "),
+    image_url: post.image_url ?? "",
+    video_url: post.video_url ?? "",
+    image_prompt: post.image_prompt ?? "",
+    link_url: post.link_url ?? "",
+    campaign_id: post.campaign_id ? String(post.campaign_id) : "",
+    planned: toBizInput(post.scheduled_at),
+  };
+}
+
+const LEAVE_MSG = "You have unsaved changes to this post. Leave without saving?";
+
 export function PostEditorPage() {
   const { id } = useParams();
   const isNew = !id;
   const [params] = useSearchParams();
   const nav = useNavigate();
+  const location = useLocation();
+  const from = (location.state as FromState)?.from;
+  const back = from?.to && from.label ? from : { to: "/posts", label: "Posts" };
   const { user, can } = useAuth();
   const toast = useToast();
+  const appStatus = useAppStatus();
   const detail = useLoad(() => (isNew ? Promise.resolve(null) : api<Detail>(`/posts/${id}`)), [id]);
   const campaigns = useLoad(() => api<{ campaigns: { id: number; name: string; status: string }[] }>("/campaigns"), []);
 
-  const [form, setForm] = useState({ title: "", message: "", hashtags: "", image_url: "", image_prompt: "", link_url: "", campaign_id: "", planned: "" });
+  const [form, setForm] = useState<Form>(EMPTY);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [check, setCheck] = useState<{ issues: string[]; hasDisclaimer: boolean; disclaimer: string } | null>(null);
@@ -73,43 +206,88 @@ export function PostEditorPage() {
   const [changesOpen, setChangesOpen] = useState(false);
   const [changesText, setChangesText] = useState("");
   const [comment, setComment] = useState("");
-  const [confirm, setConfirm] = useState<null | "delete" | "publish">(null);
+  const [confirm, setConfirm] = useState<null | "delete" | "publish" | "cancel" | "unschedule">(null);
+  const [videoBroken, setVideoBroken] = useState(false);
 
   const post = detail.data?.post;
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  /** Set by our own successful actions, so the version they produce isn't reported as someone else's change. */
+  const ownChange = useRef(false);
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
 
+  // Fill the form from the server only when a different version of the post arrives and there are
+  // no unsaved edits, so reloading after an action (comment, schedule, …) never wipes what's typed.
+  const postKey = post ? `${post.id}:${post.updated_at}` : null;
   useEffect(() => {
-    if (post) {
-      setForm({
-        title: post.title,
-        message: post.message,
-        hashtags: post.hashtags.join(" "),
-        image_url: post.image_url ?? "",
-        image_prompt: post.image_prompt ?? "",
-        link_url: post.link_url ?? "",
-        campaign_id: post.campaign_id ? String(post.campaign_id) : "",
-        planned: toLocalInput(post.scheduled_at),
-      });
-      setSchedAt(toLocalInput(post.scheduled_at ?? new Date(Date.now() + 3600_000)));
-      setDirty(false);
-    } else if (isNew) {
-      const d = params.get("date");
-      setForm((f) => ({ ...f, planned: d ? `${d}T09:00` : "", campaign_id: params.get("campaign") ?? "" }));
-      setSchedAt(toLocalInput(new Date(Date.now() + 3600_000)));
+    if (!post || !postKey || postKey === loadedKey) return;
+    if (!dirty) {
+      ownChange.current = false;
+      setLoadedKey(postKey);
+      setForm(formFrom(post));
+      setSchedAt(futureBizInput(post.scheduled_at));
+    } else if (ownChange.current) {
+      ownChange.current = false;
+      setLoadedKey(postKey);
     }
-  }, [post, isNew, params]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [postKey, dirty, loadedKey]);
+  const serverChanged = !!post && !!loadedKey && postKey !== loadedKey && dirty;
 
-  // Live brand-rule check while typing
+  // New post: prefill from ?date= (a Philippine day) and ?campaign=
+  useEffect(() => {
+    if (!isNew) return;
+    setLoadedKey(null);
+    const d = params.get("date");
+    setForm({ ...EMPTY, planned: d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? defaultSlot(d) : "", campaign_id: params.get("campaign") ?? "" });
+    setSchedAt(futureBizInput(null));
+    setDirty(false);
+  }, [isNew, params]);
+
+  // Live brand-rule check while typing; only the newest answer counts.
+  const checkSeq = useRef(0);
   useEffect(() => {
     const t = setTimeout(() => {
+      const seq = ++checkSeq.current;
       if (!form.message.trim()) return setCheck(null);
       api<{ issues: string[]; hasDisclaimer: boolean; disclaimer: string }>("/studio/check", { body: { text: `${form.title}\n${form.message}` } })
-        .then(setCheck)
+        .then((r) => {
+          if (seq === checkSeq.current) setCheck(r);
+        })
         .catch(() => undefined);
     }, 600);
     return () => clearTimeout(t);
   }, [form.title, form.message]);
 
-  const set = (k: keyof typeof form) => (e: { target: { value: string } }) => {
+  // Unsaved-changes protection: closing/reloading the tab, and any in-app link click (sidebar, breadcrumb…).
+  useEffect(() => {
+    if (!dirty) return;
+    const onUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    const onClick = (e: MouseEvent) => {
+      if (!dirtyRef.current || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!a || a.target === "_blank" || a.hasAttribute("download")) return;
+      const url = new URL(a.href, window.location.href);
+      if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+      if (!window.confirm(LEAVE_MSG)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", onUnload);
+    document.addEventListener("click", onClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", onUnload);
+      document.removeEventListener("click", onClick, true);
+    };
+  }, [dirty]);
+
+  useEffect(() => setVideoBroken(false), [form.video_url]);
+
+  const set = (k: keyof Form) => (e: { target: { value: string } }) => {
     setForm((f) => ({ ...f, [k]: e.target.value }));
     setDirty(true);
   };
@@ -117,23 +295,28 @@ export function PostEditorPage() {
   const payload = () => ({
     title: form.title.trim(),
     message: form.message,
-    hashtags: form.hashtags.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean).map((h) => (h.startsWith("#") ? h : `#${h}`)),
+    hashtags: splitTags(form.hashtags),
     image_url: form.image_url.trim() || null,
+    video_url: form.video_url.trim() || null,
     image_prompt: form.image_prompt.trim() || null,
     link_url: form.link_url.trim() || null,
     campaign_id: form.campaign_id ? Number(form.campaign_id) : null,
-    ...(post?.status !== "scheduled" ? { scheduled_at: fromLocalInput(form.planned) } : {}),
+    ...(post?.status !== "scheduled" ? { scheduled_at: fromBizInput(form.planned) } : {}),
   });
 
-  async function run(label: string, fn: () => Promise<unknown>, okMsg?: string) {
+  /** Runs an action; resolves true on success. The form is only marked saved when `saved` is set. */
+  async function run(label: string, fn: () => Promise<unknown>, okMsg?: string, opts: { saved?: boolean; reload?: boolean } = {}): Promise<boolean> {
     setBusy(label);
     try {
       await fn();
+      ownChange.current = true;
+      if (opts.saved) setDirty(false);
       if (okMsg) toast.ok(okMsg);
-      await detail.reload();
-      setDirty(false);
+      if (opts.reload !== false) await detail.reload();
+      return true;
     } catch (e) {
       toast.err("That didn't work", (e as Error).message);
+      return false;
     } finally {
       setBusy(null);
     }
@@ -144,8 +327,10 @@ export function PostEditorPage() {
       setBusy("save");
       try {
         const r = await api<{ post: { id: number } }>("/posts", { body: payload() });
+        setDirty(false);
+        dirtyRef.current = false;
         toast.ok("Draft saved");
-        nav(`/posts/${r.post.id}`, { replace: true });
+        nav(`/posts/${r.post.id}`, { replace: true, state: location.state });
       } catch (e) {
         toast.err("Couldn't save", (e as Error).message);
       } finally {
@@ -153,34 +338,91 @@ export function PostEditorPage() {
       }
       return;
     }
-    await run("save", async () => {
-      const r = await api<{ resetApproval: boolean }>(`/posts/${id}`, { method: "PATCH", body: payload() });
-      if (r.resetApproval) toast.ok("Saved. It needs approval again", "Because the content changed after review.");
-      else toast.ok("Saved");
-    });
+    await run(
+      "save",
+      async () => {
+        const r = await api<{ resetApproval: boolean }>(`/posts/${id}`, { method: "PATCH", body: payload() });
+        if (r.resetApproval) toast.ok("Saved. It needs approval again", "Because the content changed after review.");
+        else toast.ok("Saved");
+      },
+      undefined,
+      { saved: true },
+    );
   }
 
   async function saveThen(action: string, body?: unknown, okMsg?: string) {
-    await run(action, async () => {
-      if (dirty) await api(`/posts/${id}`, { method: "PATCH", body: payload() });
-      await api(`/posts/${id}/${action}`, { body: body ?? {} });
-    }, okMsg);
+    const hadEdits = dirty;
+    return run(
+      action,
+      async () => {
+        if (hadEdits) {
+          await api(`/posts/${id}`, { method: "PATCH", body: payload() });
+          setDirty(false);
+        }
+        await api(`/posts/${id}/${action}`, { body: body ?? {} });
+      },
+      okMsg,
+    );
+  }
+
+  async function addComment() {
+    setBusy("comment");
+    try {
+      await api(`/posts/${id}/comment`, { body: { comment } });
+      setComment("");
+      // Only the history changes: refresh it without touching the post or the form.
+      const d = await api<Detail>(`/posts/${id}`);
+      detail.setData((cur) => (cur ? { ...cur, reviews: d.reviews } : cur));
+    } catch (e) {
+      toast.err("Couldn't add the comment", (e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function discardAndReload() {
+    setLoadedKey(null);
+    setDirty(false);
   }
 
   if (!isNew && detail.loading && !detail.data) return <Skeleton rows={5} />;
-  if (detail.error) return <LoadError error={detail.error} retry={detail.reload} />;
+  if (detail.error && !detail.data) return <LoadError error={detail.error} retry={detail.reload} />;
 
   const status = post?.status ?? "draft";
   const editable = can("posts.edit") && (isNew || EDITABLE.includes(status));
-  const isAuthor = post?.created_by === user?.id;
-  const canApproveThis = can("posts.approve") && (!isAuthor || user?.role === "admin");
-  const valid = form.title.trim() && form.message.trim();
-  const preview = `${form.message.trim()}${payload().hashtags.filter((h) => !form.message.includes(h)).length ? `\n\n${payload().hashtags.filter((h) => !form.message.includes(h)).join(" ")}` : ""}`;
+  const isAuthor = !!post && post.created_by === user?.id;
+  const isLastEditor = !!post && post.last_edited_by === user?.id;
+  const isAdmin = user?.role === "admin";
+  const ownWork = (isAuthor || isLastEditor) && !isAdmin;
+  const canApproveThis = can("posts.approve") && !ownWork;
+  const testMode = appStatus?.publishTestMode === true;
+  const pageName = appStatus?.facebook?.pageName || appStatus?.businessName || "Your Page";
+
+  const imageErr = editable ? mediaProblem("image", form.image_url) : null;
+  const videoErr = editable ? mediaProblem("video", form.video_url) : null;
+  const bothMedia = !!form.image_url.trim() && !!form.video_url.trim();
+  const plannedErr = form.planned && !fromBizInput(form.planned) ? "Pick a valid date and time." : null;
+  const valid = !!form.title.trim() && !!form.message.trim() && !imageErr && !videoErr && !bothMedia && !plannedErr;
+
+  // Matches the server's contentChanged: only these fields send a post back for approval.
+  const contentChanged =
+    !!post &&
+    (form.title.trim() !== post.title ||
+      form.message !== post.message ||
+      JSON.stringify(splitTags(form.hashtags)) !== JSON.stringify(post.hashtags) ||
+      (form.image_url.trim() || null) !== (post.image_url ?? null) ||
+      (form.video_url.trim() || null) !== (post.video_url ?? null) ||
+      (form.link_url.trim() || null) !== (post.link_url ?? null));
+
+  const preview = composePreview(form.message, splitTags(form.hashtags));
+  const videoUrl = form.video_url.trim();
+  const imageUrl = form.image_url.trim();
+  const schedIso = fromBizInput(schedAt);
 
   return (
     <>
       <PageHead
-        crumbs={[{ to: "/posts", label: "Posts" }, { label: isNew ? "New post" : post?.title ?? "" }]}
+        crumbs={[{ to: back.to, label: back.label }, { label: isNew ? "New post" : post?.title ?? "" }]}
         title={isNew ? "New post" : post?.title}
         sub={
           post ? (
@@ -188,7 +430,10 @@ export function PostEditorPage() {
               <StatusTag map={POST_STATUS} value={status} />
               {post.ai_generated && <Tag tone="info">AI draft</Tag>}
               {post.campaign_name && <Tag tone="outline">{post.campaign_name}</Tag>}
-              <span className="small muted">by {post.created_by_name}</span>
+              <span className="small muted">
+                by {post.created_by_name ?? "—"}
+                {post.last_edited_by_name && post.last_edited_by !== post.created_by ? ` · last edited by ${post.last_edited_by_name}` : ""}
+              </span>
             </span>
           ) : (
             "Write the post, then send it for approval."
@@ -205,9 +450,17 @@ export function PostEditorPage() {
 
       <div className="grid g-side">
         <div className="stackv" style={{ gap: 20 }}>
-          {post && ["approved", "scheduled"].includes(status) && dirty && (
+          {serverChanged && (
+            <Alert tone="warn" title="Someone else changed this post">
+              Your unsaved edits are based on an older version. Saving will overwrite their changes.{" "}
+              <button type="button" className="btn btn-quiet btn-sm" onClick={discardAndReload}>
+                Discard my edits and load theirs
+              </button>
+            </Alert>
+          )}
+          {post && RESETS_APPROVAL.includes(status) && dirty && contentChanged && (
             <Alert tone="warn" title="Saving will send this post back for approval">
-              It was approved as it was. Any change to the text, hashtags, image or link needs approval again.
+              {status === "in_review" ? "It's being reviewed as it was." : "It was approved as it was."} Any change to the title, text, hashtags, image, video or link needs approval again.
             </Alert>
           )}
           <div className="board stackv" style={{ gap: 16 }}>
@@ -231,6 +484,7 @@ export function PostEditorPage() {
                     The brand disclaimer is missing: “{check.disclaimer}”{" "}
                     {editable && (
                       <button
+                        type="button"
                         className="btn btn-quiet btn-sm"
                         onClick={() => {
                           setForm((f) => ({ ...f, message: `${f.message.trim()}\n\n${check.disclaimer}` }));
@@ -250,9 +504,35 @@ export function PostEditorPage() {
               </Alert>
             )}
             <div className="grid g2">
-              <TextField label="Image URL" optional value={form.image_url} onChange={set("image_url")} disabled={!editable} placeholder="https://… (public image link)" hint="Posts with an image are published as a photo post." />
+              <TextField
+                label="Image URL"
+                optional
+                value={form.image_url}
+                onChange={set("image_url")}
+                disabled={!editable}
+                placeholder="https://… (public image link)"
+                error={imageErr}
+                hint="Posts with an image are published as a photo post."
+              />
               <TextField label="Link" optional value={form.link_url} onChange={set("link_url")} disabled={!editable} placeholder="https://…" />
             </div>
+            <TextField
+              label="Video URL"
+              optional
+              value={form.video_url}
+              onChange={set("video_url")}
+              disabled={!editable}
+              placeholder="https://… (direct .mp4, .mov, .m4v or .webm link)"
+              error={videoErr}
+              hint="Posts with a video are published as a video post. Facebook downloads it from this link."
+            />
+            {bothMedia && (
+              <Alert tone={editable ? "bad" : "warn"} title="Use either an image or a video">
+                {editable
+                  ? "A post can have an image or a video, not both. Clear one of the two links before saving."
+                  : "This post has both. The video is what gets published; the image is ignored."}
+              </Alert>
+            )}
             <TextArea label="Image prompt" optional value={form.image_prompt} onChange={set("image_prompt")} disabled={!editable} rows={2} hint="Kept for the designer; not published." />
             <div className="grid g2">
               <SelectField
@@ -264,61 +544,91 @@ export function PostEditorPage() {
                 options={[{ value: "", label: "None" }, ...(campaigns.data?.campaigns ?? []).map((c) => ({ value: c.id, label: c.name }))]}
               />
               {status !== "scheduled" && (
-                <TextField label="Planned date" optional type="datetime-local" value={form.planned} onChange={set("planned")} disabled={!editable} hint="Places it on the calendar. Publishing needs approval and scheduling." />
-              )}
-            </div>
-          </div>
-
-          <div>
-            <p className="label">Facebook preview</p>
-            <div className="card soft" style={{ maxWidth: 520 }}>
-              <div className="row" style={{ gap: 10 }}>
-                <Avatar name="Get Meds" size="sm" />
-                <div>
-                  <b style={{ fontSize: 13.5 }}>Your Page</b>
-                  <div className="sub">{post?.scheduled_at ? fmtDate(post.scheduled_at, true) : "Not scheduled"} · 🌐</div>
-                </div>
-              </div>
-              <p className="pre" style={{ margin: "12px 0", fontSize: 14 }}>
-                {preview || <span className="muted">Your text appears here.</span>}
-              </p>
-              {form.image_url && <img src={form.image_url} alt="" style={{ width: "100%", borderRadius: 12, border: "1px solid var(--rule)" }} onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />}
-              {form.link_url && !form.image_url && (
-                <div className="code" style={{ display: "block", padding: 10 }}>
-                  {form.link_url}
-                </div>
+                <TextField
+                  label={`Planned date (${BUSINESS_TZ_LABEL})`}
+                  optional
+                  type="datetime-local"
+                  value={form.planned}
+                  onChange={set("planned")}
+                  disabled={!editable}
+                  error={plannedErr}
+                  hint="Places it on the calendar. Publishing needs approval and scheduling."
+                />
               )}
             </div>
           </div>
         </div>
 
-        {/* ---- Workflow side panel ---- */}
+        {/* ---- Side panel: live preview, then the workflow ---- */}
         <aside className="stackv first-on-mobile" style={{ gap: 16 }}>
+          <div>
+            <p className="label">Facebook preview</p>
+            <div className="card soft">
+              <div className="row" style={{ gap: 10 }}>
+                <Avatar name={pageName} size="sm" />
+                <div>
+                  <b style={{ fontSize: 13.5 }}>{pageName}</b>
+                  <div className="sub">{post?.scheduled_at ? `${fmtBiz(post.scheduled_at)} (${BUSINESS_TZ_LABEL})` : "Not scheduled"} · 🌐</div>
+                </div>
+              </div>
+              <p className="pre" style={{ margin: "12px 0", fontSize: 14, overflowWrap: "anywhere" }}>
+                {preview || <span className="muted">Your text appears here.</span>}
+              </p>
+              {videoUrl ? (
+                !mediaProblem("video", videoUrl) && !videoBroken ? (
+                  <video className="pe-video" src={videoUrl} controls preload="metadata" onError={() => setVideoBroken(true)} />
+                ) : (
+                  <div className="pe-video-ph">
+                    <Icon name="alert" />
+                    <div>
+                      <b>Video</b>
+                      <span>{videoBroken ? "The preview couldn't load this video. Check the link opens the file directly." : "Add a direct video file link to preview it."}</span>
+                      <a href={videoUrl} target="_blank" rel="noreferrer">
+                        {videoUrl}
+                      </a>
+                    </div>
+                  </div>
+                )
+              ) : imageUrl ? (
+                <img src={imageUrl} alt="" style={{ width: "100%", borderRadius: 12, border: "1px solid var(--rule)" }} onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />
+              ) : form.link_url ? (
+                <div className="code" style={{ display: "block", padding: 10, overflowWrap: "anywhere", whiteSpace: "normal" }}>
+                  {form.link_url}
+                </div>
+              ) : null}
+              {videoUrl && imageUrl && <p className="note">Only the video is shown: a post can't have both.</p>}
+            </div>
+          </div>
           {post && (
             <div className="board">
               <p className="label">Where it is</p>
               <Steps steps={["Draft", "Review", "Approved", "Scheduled", "Published"]} current={stepIndex(status)} failed={status === "failed"} vertical />
               <div className="stackv mt24">
+                {testMode && ["approved", "scheduled", "publishing", "failed"].includes(status) && (
+                  <Alert tone="warn" title="Test mode is on">
+                    It will be marked published but not sent to Facebook.
+                  </Alert>
+                )}
                 {(status === "draft" || status === "changes_requested") && can("posts.edit") && (
-                  <>
-                    <Button variant="primary" icon="send" loading={busy === "submit"} disabled={!valid} onClick={() => saveThen("submit", {}, "Sent for review")}>
-                      Send for review
-                    </Button>
-                    <Button variant="quiet" icon="trash" onClick={() => setConfirm("delete")}>
-                      Delete draft
-                    </Button>
-                  </>
+                  <Button variant="primary" icon="send" loading={busy === "submit"} disabled={!valid} onClick={() => void saveThen("submit", {}, "Sent for review")}>
+                    Send for review
+                  </Button>
                 )}
                 {status === "in_review" &&
                   (canApproveThis ? (
                     <>
-                      <TextField label="Publish at" type="datetime-local" value={schedAt} onChange={(e) => setSchedAt(e.target.value)} />
+                      <TextField label={`Publish at (${BUSINESS_TZ_LABEL})`} type="datetime-local" value={schedAt} onChange={(e) => setSchedAt(e.target.value)} />
                       {can("posts.schedule") && (
-                        <Button variant="primary" loading={busy === "approve"} disabled={dirty} onClick={() => run("approve", () => api(`/posts/${id}/approve`, { body: { scheduleAt: fromLocalInput(schedAt) } }), "Approved and scheduled")}>
+                        <Button
+                          variant="primary"
+                          loading={busy === "approve"}
+                          disabled={dirty || !schedIso}
+                          onClick={() => void run("approve", () => api(`/posts/${id}/approve`, { body: { scheduleAt: schedIso } }), "Approved and scheduled")}
+                        >
                           Approve and schedule
                         </Button>
                       )}
-                      <Button variant="secondary" loading={busy === "approve-only"} disabled={dirty} onClick={() => run("approve-only", () => api(`/posts/${id}/approve`, { body: {} }), "Approved")}>
+                      <Button variant="secondary" loading={busy === "approve-only"} disabled={dirty} onClick={() => void run("approve-only", () => api(`/posts/${id}/approve`, { body: {} }), "Approved")}>
                         Approve only
                       </Button>
                       <Button variant="quiet" onClick={() => setChangesOpen(true)}>
@@ -328,13 +638,23 @@ export function PostEditorPage() {
                     </>
                   ) : (
                     <Alert tone="info" title="Waiting for approval">
-                      {isAuthor ? "A marketing manager will review it. You'll see their comments here." : "Only marketing managers can approve posts."}
+                      {can("posts.approve") && ownWork
+                        ? `Another manager has to approve this, because you ${isAuthor ? "wrote it" : "made the latest changes"}.`
+                        : isAuthor
+                          ? "A marketing manager will review it. You'll see their comments here."
+                          : "Only marketing managers can approve posts."}
                     </Alert>
                   ))}
                 {status === "approved" && can("posts.schedule") && (
                   <>
-                    <TextField label="Publish at" type="datetime-local" value={schedAt} onChange={(e) => setSchedAt(e.target.value)} />
-                    <Button variant="primary" icon="cal" loading={busy === "schedule"} onClick={() => run("schedule", () => api(`/posts/${id}/schedule`, { body: { scheduledAt: fromLocalInput(schedAt) } }), "Scheduled")}>
+                    <TextField label={`Publish at (${BUSINESS_TZ_LABEL})`} type="datetime-local" value={schedAt} onChange={(e) => setSchedAt(e.target.value)} />
+                    <Button
+                      variant="primary"
+                      icon="cal"
+                      loading={busy === "schedule"}
+                      disabled={!schedIso}
+                      onClick={() => void run("schedule", () => api(`/posts/${id}/schedule`, { body: { scheduledAt: schedIso } }), "Scheduled")}
+                    >
                       Schedule
                     </Button>
                     <Button variant="secondary" onClick={() => setConfirm("publish")}>
@@ -344,24 +664,36 @@ export function PostEditorPage() {
                 )}
                 {status === "scheduled" && post.scheduled_at && (
                   <>
-                    <Alert tone="info" title={`Publishes ${fmtDate(post.scheduled_at, true)}`}>
+                    <Alert tone="info" title={`Publishes ${fmtBiz(post.scheduled_at)} (${BUSINESS_TZ_LABEL})`}>
                       {post.attempts > 0
                         ? `Attempt ${post.attempts} of ${post.max_attempts} failed: ${post.last_error}. Next try ${ago(post.next_attempt_at)}.`
-                        : `That's ${ago(post.scheduled_at)}. Approved by ${post.approved_by_name}.`}
+                        : `That's ${ago(post.scheduled_at)}. Approved by ${post.approved_by_name ?? "—"}.`}
                     </Alert>
                     {can("posts.schedule") && (
                       <>
                         <Button variant="secondary" onClick={() => setConfirm("publish")}>
                           Publish now
                         </Button>
-                        <Button variant="quiet" loading={busy === "unschedule"} onClick={() => run("unschedule", () => api(`/posts/${id}/unschedule`, { body: {} }), "Unscheduled")}>
+                        <Button variant="quiet" loading={busy === "unschedule"} onClick={() => setConfirm("unschedule")}>
                           Unschedule
                         </Button>
                       </>
                     )}
                   </>
                 )}
-                {status === "publishing" && <Alert tone="info" title="Publishing now">Refresh in a moment.</Alert>}
+                {["approved", "scheduled"].includes(status) && can("posts.schedule") && (
+                  <Button variant="quiet" icon="x" loading={busy === "cancel"} onClick={() => setConfirm("cancel")}>
+                    Cancel post
+                  </Button>
+                )}
+                {status === "publishing" && (
+                  <Alert tone="info" title="Publishing now">
+                    Refresh in a moment.{" "}
+                    <button type="button" className="btn btn-quiet btn-sm" onClick={() => void detail.reload()}>
+                      Refresh
+                    </button>
+                  </Alert>
+                )}
                 {status === "failed" && (
                   <>
                     <Alert tone="bad" title={`Didn't publish after ${post.attempts} attempt${post.attempts === 1 ? "" : "s"}`}>
@@ -369,20 +701,30 @@ export function PostEditorPage() {
                     </Alert>
                     {can("posts.schedule") && (
                       <>
-                        <Button variant="primary" icon="refresh" loading={busy === "retry"} onClick={() => run("retry", () => api(`/posts/${id}/retry`, { body: {} }), "Retrying now")}>
+                        <Button variant="primary" icon="refresh" loading={busy === "retry"} onClick={() => void run("retry", () => api(`/posts/${id}/retry`, { body: {} }), "Retrying now")}>
                           Try again
                         </Button>
-                        <Button variant="quiet" loading={busy === "cancel"} onClick={() => run("cancel", () => api(`/posts/${id}/cancel`, { body: {} }), "Cancelled")}>
+                        <Button variant="quiet" icon="x" loading={busy === "cancel"} onClick={() => setConfirm("cancel")}>
                           Cancel post
                         </Button>
                       </>
                     )}
                   </>
                 )}
+                {status === "cancelled" && (
+                  <Alert tone="info" title="Cancelled">
+                    This post won't be published.
+                  </Alert>
+                )}
+                {DELETABLE.includes(status) && can("posts.edit") && (
+                  <Button variant="quiet" icon="trash" onClick={() => setConfirm("delete")}>
+                    {status === "draft" || status === "changes_requested" ? "Delete draft" : "Delete post"}
+                  </Button>
+                )}
                 {status === "published" && (
                   <>
-                    <Alert tone="good" title={`Published ${fmtDate(post.published_at, true)}`}>
-                      {post.fb_post_id?.startsWith("dryrun_") ? "Dry run: this wasn't really sent to Facebook (PUBLISH_DRY_RUN=true)." : `Facebook post ID ${post.fb_post_id}`}
+                    <Alert tone="good" title={`Published ${fmtBiz(post.published_at)} (${BUSINESS_TZ_LABEL})`}>
+                      {post.fb_post_id?.startsWith("dryrun_") ? "Test mode: this wasn't really sent to Facebook." : `Facebook post ID ${post.fb_post_id}`}
                     </Alert>
                     {detail.data?.stats?.permalink_url && (
                       <a className="btn btn-secondary" href={detail.data.stats.permalink_url} target="_blank" rel="noreferrer">
@@ -415,14 +757,9 @@ export function PostEditorPage() {
               <p className="label">Review history</p>
               <div className="row" style={{ gap: 8, alignItems: "flex-end" }}>
                 <div className="grow">
-                  <TextField label="Comment" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a note for the team" />
+                  <TextField label="Comment" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a note for the team" maxLength={1000} />
                 </div>
-                <Button
-                  size="sm"
-                  disabled={!comment.trim()}
-                  loading={busy === "comment"}
-                  onClick={() => run("comment", () => api(`/posts/${id}/comment`, { body: { comment } }).then(() => setComment("")))}
-                >
+                <Button size="sm" disabled={!comment.trim()} loading={busy === "comment"} onClick={() => void addComment()}>
                   Add
                 </Button>
               </div>
@@ -436,7 +773,7 @@ export function PostEditorPage() {
                       <b>{DECISION[r.decision] ?? r.decision}</b>
                       <div className="meta">
                         {r.user_name}
-                        {r.comment ? ` · ${r.decision === "scheduled" && !isNaN(Date.parse(r.comment)) ? fmtDate(r.comment, true) : r.comment}` : ""}
+                        {r.comment ? ` · ${r.decision === "scheduled" && !isNaN(Date.parse(r.comment)) ? `for ${fmtBiz(r.comment)} (${BUSINESS_TZ_LABEL})` : r.comment}` : ""}
                       </div>
                     </div>
                     <time>{ago(r.created_at)}</time>
@@ -457,7 +794,7 @@ export function PostEditorPage() {
                     </span>
                     <div>
                       <b>Attempt {l.attempt}</b>
-                      <div className="meta">{l.message}</div>
+                      <div className="meta">{l.status === "dry_run" ? "Test mode: not sent to Facebook" : l.message}</div>
                     </div>
                     <time>{fmtDate(l.created_at, true)}</time>
                   </li>
@@ -481,46 +818,111 @@ export function PostEditorPage() {
                 variant="primary"
                 disabled={changesText.trim().length < 3}
                 loading={busy === "changes"}
-                onClick={() => run("changes", () => api(`/posts/${id}/request-changes`, { body: { comment: changesText } }), "Sent back to the author").then(() => setChangesOpen(false))}
+                onClick={async () => {
+                  if (await run("changes", () => api(`/posts/${id}/request-changes`, { body: { comment: changesText } }), "Sent back to the author")) {
+                    setChangesOpen(false);
+                    setChangesText("");
+                  }
+                }}
               >
                 Send back
               </Button>
             </>
           }
         >
-          <TextArea label="What needs to change?" value={changesText} onChange={(e) => setChangesText(e.target.value)} rows={4} autoFocus />
+          <TextArea label="What needs to change?" value={changesText} onChange={(e) => setChangesText(e.target.value)} rows={4} autoFocus maxLength={1000} />
         </Modal>
       )}
       {confirm === "delete" && (
         <ConfirmModal
           title={`Delete “${post?.title}”?`}
-          confirmLabel="Delete draft"
+          confirmLabel={status === "draft" || status === "changes_requested" ? "Delete draft" : "Delete post"}
           busy={busy === "delete"}
           onClose={() => setConfirm(null)}
-          onConfirm={() =>
-            run("delete", async () => {
-              await api(`/posts/${id}`, { method: "DELETE" });
-              nav("/posts");
-            }, "Draft deleted")
-          }
+          onConfirm={async () => {
+            const ok = await run(
+              "delete",
+              async () => {
+                await api(`/posts/${id}`, { method: "DELETE" });
+              },
+              "Post deleted",
+              { reload: false },
+            );
+            if (ok) {
+              setDirty(false);
+              dirtyRef.current = false;
+              setConfirm(null);
+              nav(back.to);
+            }
+          }}
         />
+      )}
+      {confirm === "cancel" && (
+        <ConfirmModal
+          title={`Cancel “${post?.title}”?`}
+          warning="It won't be published. To publish it later it would have to be written and approved again."
+          confirmLabel="Cancel post"
+          busy={busy === "cancel"}
+          onClose={() => setConfirm(null)}
+          onConfirm={async () => {
+            if (await run("cancel", () => api(`/posts/${id}/cancel`, { body: {} }), "Cancelled")) setConfirm(null);
+          }}
+        />
+      )}
+      {confirm === "unschedule" && (
+        <Modal
+          title="Unschedule this post?"
+          onClose={() => setConfirm(null)}
+          actions={
+            <>
+              <Button variant="quiet" onClick={() => setConfirm(null)}>
+                Keep it scheduled
+              </Button>
+              <Button
+                variant="primary"
+                loading={busy === "unschedule"}
+                onClick={async () => {
+                  if (await run("unschedule", () => api(`/posts/${id}/unschedule`, { body: {} }), "Unscheduled")) setConfirm(null);
+                }}
+              >
+                Unschedule
+              </Button>
+            </>
+          }
+        >
+          <p className="muted mt0">
+            It stays approved but won't go out{post?.scheduled_at ? ` on ${fmtBiz(post.scheduled_at)} (${BUSINESS_TZ_LABEL})` : ""}. You can schedule it again any time.
+          </p>
+        </Modal>
       )}
       {confirm === "publish" && (
         <Modal
-          title="Publish to Facebook now?"
+          title={testMode ? "Publish now (Test mode)?" : "Publish to Facebook now?"}
           onClose={() => setConfirm(null)}
           actions={
             <>
               <Button variant="quiet" onClick={() => setConfirm(null)}>
                 Cancel
               </Button>
-              <Button variant="primary" loading={busy === "publish-now"} onClick={() => run("publish-now", () => api(`/posts/${id}/publish-now`, { body: {} }), "Publishing within a minute").then(() => setConfirm(null))}>
+              <Button
+                variant="primary"
+                loading={busy === "publish-now"}
+                onClick={async () => {
+                  if (await run("publish-now", () => api(`/posts/${id}/publish-now`, { body: {} }), testMode ? "Will be marked published within a minute (Test mode)" : "Publishing within a minute")) setConfirm(null);
+                }}
+              >
                 Publish now
               </Button>
             </>
           }
         >
-          <p className="muted mt0">It goes out on your Facebook Page within the next minute, exactly as approved.</p>
+          {testMode ? (
+            <Alert tone="warn" title="Test mode is on">
+              It will be marked published but not sent to Facebook.
+            </Alert>
+          ) : (
+            <p className="muted mt0">It goes out on {pageName === "Your Page" ? "your Facebook Page" : pageName} within the next minute, exactly as approved.</p>
+          )}
         </Modal>
       )}
     </>

@@ -1,0 +1,23 @@
+/* Inquiries slice: Leads, Lead detail, Templates, public inquiry form. Uses the tokens from app.css. */
+
+/* List refreshing after a tab/filter change: keep the old rows visible but dimmed, with a small label. */
+.inq-loading { position: relative; }
+.inq-loading > .table-scroll { opacity: .5; pointer-events: none; transition: opacity .15s; }
+.inq-loading-label { display: inline-flex; align-items: center; gap: 8px; padding: 8px 18px; font-size: 13px; color: var(--ink-3); }
+
+/* Category breakdown chips */
+.inq-cats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.inq-cat {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--rule);
+  border-radius: var(--r-pill); background: var(--canvas); color: var(--ink-2); font-size: 13px; cursor: pointer;
+}
+.inq-cat:hover { border-color: var(--primary); }
+.inq-cat[aria-pressed="true"] { background: var(--primary); border-color: var(--primary); color: #fff; }
+.inq-cat b { font-weight: 600; }
+
+/* Follow-up editor: input and its buttons on one line */
+.inq-followup { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.inq-followup .field { flex: 1 1 180px; min-width: 0; }
+
+/* Public form brand mark when there's no logo */
+.inq-mark { text-transform: uppercase; }

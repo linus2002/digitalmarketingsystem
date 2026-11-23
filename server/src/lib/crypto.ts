@@ -29,8 +29,21 @@ export function safeDecrypt(value: string | null | undefined): string | null {
   }
 }
 
-/** Keyed hash for values we must match on but never read back (e.g. IP addresses). */
+// A separate sub-key for keyed hashes, derived from the data key with HKDF, so the AES key itself is
+// never used for HMAC. Encryption above is unchanged, so existing ciphertext keeps decrypting.
+const hmacKey = Buffer.from(crypto.hkdfSync("sha256", key, Buffer.alloc(0), Buffer.from("dm-hub/hmac/v1", "utf8"), 32));
+
+/**
+ * Keyed hash for values we must match on but never read back (e.g. IP addresses).
+ * New hashes use the HKDF sub-key; hashes stored before this change were made with the raw key
+ * and won't match new ones (they're only kept as consent evidence, never looked up).
+ */
 export function hmac(value: string): string {
+  return crypto.createHmac("sha256", hmacKey).update(value).digest("hex");
+}
+
+/** The pre-HKDF hash, only for comparing against values stored before the sub-key existed. */
+export function legacyHmac(value: string): string {
   return crypto.createHmac("sha256", key).update(value).digest("hex");
 }
 

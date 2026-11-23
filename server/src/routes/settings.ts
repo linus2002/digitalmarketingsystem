@@ -23,7 +23,8 @@ settingsRouter.get("/brand", async (_req, res) => {
   res.json({ brand: await getBrand() });
 });
 
-settingsRouter.put("/brand", requirePerm("settings.manage"), async (req, res) => {
+// Brand guidelines can be changed by brand managers (marketing managers) as well as administrators.
+settingsRouter.put("/brand", requirePerm("settings.brand"), async (req, res) => {
   const list = z.array(z.string().max(200)).max(50);
   const b = parse(
     z.object({
@@ -87,6 +88,7 @@ settingsRouter.get("/meta", requirePerm("settings.manage"), async (_req, res) =>
     pageName: page.pageName,
     source: page.source,
     hasToken: !!page.token,
+    tokenSource: page.tokenSource,
     graphVersion: env.META_GRAPH_VERSION,
     webhookConfigured: !!env.META_APP_SECRET && !!env.META_VERIFY_TOKEN,
     humanAgentTag: env.META_ENABLE_HUMAN_AGENT_TAG,
@@ -99,6 +101,8 @@ settingsRouter.get("/meta", requirePerm("settings.manage"), async (_req, res) =>
 /** Saves the Page ID and Page access token (encrypted) after checking them against the Graph API. */
 settingsRouter.put("/meta", requirePerm("settings.manage"), async (req, res) => {
   const b = parse(z.object({ pageId: z.string().regex(/^\d{5,25}$/, "A Page ID is a long number"), token: z.string().min(20).max(1000).optional() }), req.body);
+  // Without a new token, the one already in use (saved here or from .env) is checked against the new Page ID,
+  // and getMetaPage then uses the saved Page ID with that token.
   const token = b.token ?? (await getMetaPage()).token;
   if (!token) return void res.status(400).json({ error: "Add the Page access token." });
   let name: string | undefined;

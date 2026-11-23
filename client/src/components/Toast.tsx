@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import { Icon } from "./Icons";
 
 interface ToastItem {
@@ -40,10 +40,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** Stable across renders, so pages can list `toast` in effect dependencies. */
 export function useToast() {
   const push = useContext(Ctx);
-  return {
-    ok: (title: string, detail?: string) => push({ title, detail }),
-    err: (title: string, detail?: string) => push({ title, detail, bad: true }),
-  };
+  return useMemo(
+    () => ({
+      ok: (title: string, detail?: string) => push({ title, detail }),
+      err: (title: string, detail?: string) => push({ title, detail, bad: true }),
+    }),
+    [push],
+  );
 }

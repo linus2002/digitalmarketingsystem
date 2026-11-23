@@ -29,21 +29,39 @@ export async function ollamaWarm(): Promise<void> {
   });
 }
 
-export async function ollamaChat(opts: { system: string; prompt: string; json?: boolean; temperature: number; timeoutMs: number; maxTokens?: number }): Promise<string> {
+export async function ollamaChat(opts: {
+  system: string;
+  prompt: string;
+  json?: boolean;
+  temperature: number;
+  timeoutMs: number;
+  maxTokens?: number;
+  signal?: AbortSignal;
+}): Promise<string> {
+  // Stop on whichever comes first: the time limit, or the caller cancelling (e.g. the person closed the page).
+  const timeout = AbortSignal.timeout(opts.timeoutMs);
+  const signal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout;
+  const cancelled = () => !!opts.signal?.aborted && !timeout.aborted;
   let res: Response;
   try {
     res = await fetch(`${env.OLLAMA_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(opts.timeoutMs),
+      signal,
       body: JSON.stringify({
         model: env.OLLAMA_MODEL,
         stream: false,
         keep_alive: KEEP_ALIVE,
         format: opts.json ? "json" : undefined,
-        // A modest context window is enough for these prompts and keeps CPU work down;
-        // num_predict stops runaway answers.
-        options: { temperature: opts.temperature, num_ctx: 4096, ...(opts.maxTokens ? { num_predict: opts.maxTokens } : {}) },
+        // A modest context window keeps CPU work down, but it must hold the prompt (~1.5k tokens) plus the whole answer,
+        // so it grows for long pieces. num_predict stops runaway answers.
+        options: {
+          temperature: opts.temperature,
+          // Small models can loop on the same phrase; a mild penalty keeps long answers moving.
+          repeat_penalty: 1.12,
+          num_ctx: Math.min(16384, Math.max(4096, (opts.maxTokens ?? 0) + 2048)),
+          ...(opts.maxTokens ? { num_predict: opts.maxTokens } : {}),
+        },
         messages: [
           { role: "system", content: opts.system },
           { role: "user", content: opts.prompt },
@@ -51,7 +69,8 @@ export async function ollamaChat(opts: { system: string; prompt: string; json?: 
       }),
     });
   } catch (err) {
-    const timedOut = (err as Error).name === "TimeoutError";
+    if (cancelled()) throw new HttpError(499, "The request was cancelled.");
+    const timedOut = (err as Error).name === "TimeoutError" || timeout.aborted;
     throw new HttpError(
       503,
       timedOut
@@ -64,6 +83,13 @@ export async function ollamaChat(opts: { system: string; prompt: string; json?: 
     if (res.status === 404) throw new HttpError(503, `The model "${env.OLLAMA_MODEL}" isn't installed. Run: ollama pull ${env.OLLAMA_MODEL}`);
     throw new HttpError(502, `The local AI returned an error: ${text.slice(0, 200)}`);
   }
-  const data = (await res.json()) as { message?: { content?: string } };
-  return data.message?.content ?? "";
+  let data: { message?: { content?: string } };
+  try {
+    data = (await res.json()) as { message?: { content?: string } };
+  } catch (err) {
+    if (cancelled()) throw new HttpError(499, "The request was cancelled.");
+    if ((err as Error).name === "TimeoutError" || timeout.aborted) throw new HttpError(503, "The local AI model took too long to answer. Try a shorter request or a smaller model.");
+    throw new HttpError(502, "The local AI sent back an answer that couldn't be read. Please try again.");
+  }
+  return data?.message?.content ?? "";
 }

@@ -5,7 +5,8 @@ import { one, pool, q } from "../lib/db.js";
 import { DEFAULT_BRAND, DEFAULT_CONSENT, DEFAULT_RETENTION } from "../lib/settings.js";
 import { SYSTEM_TEMPLATES, AGENT_TEMPLATES } from "./templates.js";
 
-const DEFAULT_SOURCES: { name: string; kind: "rss" | "pubmed" | "newsapi"; url?: string; query?: string; enabled: boolean }[] = [
+const DEFAULT_SOURCES: { name: string; kind: "rss" | "pubmed" | "newsapi" | "google_trends"; url?: string; query?: string; enabled: boolean }[] = [
+  { name: "Google Trends: Philippines", kind: "google_trends", query: "PH", enabled: true },
   { name: "WHO news", kind: "rss", url: "https://www.who.int/rss-feeds/news-english.xml", enabled: true },
   { name: "FDA press releases", kind: "rss", url: "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml", enabled: true },
   { name: "European Medicines Agency news", kind: "rss", url: "https://www.ema.europa.eu/en/news.xml", enabled: true },

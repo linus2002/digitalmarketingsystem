@@ -1,0 +1,31 @@
+/* AI bots page: additions and overrides on top of the bot styles in app.css */
+
+.bots-page .office-head { flex-wrap: wrap; gap: 10px 16px; }
+.bots-page .batch-picker { flex-wrap: wrap; gap: 10px; }
+.bots-page .bot-run { display: flex; gap: 14px; align-items: center; }
+.bots-page .bot-run > .btn { flex: none; }
+.bots-page .bot-readonly { border-left: 3px solid var(--rule); padding-left: 10px; }
+
+/* The office bots are mouse targets only; keyboard focus lives on the bot chips. */
+.bots-page .office-bot { outline: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bots-page .bar i { transition: none; }
+}
+
+/* Phones: the office folds away by default and the chips become one swipeable strip, so the batch work comes first. */
+@media (max-width: 759px) {
+  .bots-page .bot-chips {
+    display: flex;
+    grid-template-columns: none;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+    gap: 8px;
+    padding-bottom: 6px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .bots-page .bot-chip { flex: 0 0 auto; width: 168px; scroll-snap-align: start; }
+  .bots-page .bot-panel { scroll-margin-top: 12px; }
+  .bots-page .bot-run { flex-wrap: wrap; }
+}

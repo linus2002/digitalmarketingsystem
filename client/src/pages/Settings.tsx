@@ -1,36 +1,88 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { ago } from "../lib/format";
 import { useToast } from "../components/Toast";
-import { Alert, Button, IconButton, LoadError, PageHead, SelectField, Skeleton, Switch, Tabs, Tag, TextArea, TextField } from "../components/ui";
+import { Alert, Button, ConfirmModal, Empty, IconButton, LoadError, PageHead, SelectField, Skeleton, Switch, Tabs, Tag, TextArea, TextField } from "../components/ui";
+import "../styles/content.css";
 
 type Tab = "brand" | "facebook" | "sources" | "privacy" | "system";
 
+// settings.brand (marketing managers) covers the brand guidelines and trend sources; settings.manage (administrators) covers everything.
+const TABS: { value: Tab; label: string; perm: "settings.brand" | "settings.manage" }[] = [
+  { value: "brand", label: "Brand guidelines", perm: "settings.brand" },
+  { value: "facebook", label: "Facebook connection", perm: "settings.manage" },
+  { value: "sources", label: "Trend sources", perm: "settings.brand" },
+  { value: "privacy", label: "Privacy and retention", perm: "settings.manage" },
+  { value: "system", label: "System", perm: "settings.manage" },
+];
+
 export function SettingsPage() {
+  const { can } = useAuth();
   const [params, setParams] = useSearchParams();
-  const tab = (params.get("tab") as Tab) || "brand";
+  const isAdmin = can("settings.manage");
+  const allowed = TABS.filter((t) => isAdmin || can(t.perm));
+  const asked = params.get("tab");
+  // An unknown or not-allowed ?tab= falls back to the first tab this person may use.
+  const tab: Tab | undefined = allowed.find((t) => t.value === asked)?.value ?? allowed[0]?.value;
+  const [brandDirty, setBrandDirty] = useState(false);
+  const [pendingTab, setPendingTab] = useState<Tab | null>(null);
+
+  // Warn before closing or reloading the page with unsaved brand edits.
+  useEffect(() => {
+    if (!brandDirty) return;
+    const onUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, [brandDirty]);
+
+  const go = (t: Tab) => {
+    if (t === tab) return;
+    if (tab === "brand" && brandDirty) setPendingTab(t);
+    else setParams({ tab: t });
+  };
+
+  if (!tab)
+    return (
+      <>
+        <PageHead title="Settings" />
+        <div className="board">
+          <Empty title="Nothing to change here">Settings are managed by administrators. Ask one if something needs changing.</Empty>
+        </div>
+      </>
+    );
+
+  const sub = isAdmin ? "Brand rules for the AI, the Facebook connection, trend sources and privacy." : "Brand rules for the AI and the sources the trend scanner reads.";
   return (
     <>
-      <PageHead title="Settings" sub="Brand rules for the AI, the Facebook connection, trend sources and privacy." />
-      <Tabs
-        value={tab}
-        onChange={(t) => setParams({ tab: t })}
-        tabs={[
-          { value: "brand", label: "Brand guidelines" },
-          { value: "facebook", label: "Facebook connection" },
-          { value: "sources", label: "Trend sources" },
-          { value: "privacy", label: "Privacy and retention" },
-          { value: "system", label: "System" },
-        ]}
-      />
+      <PageHead title="Settings" sub={sub} />
+      {allowed.length > 1 && <Tabs value={tab} onChange={go} tabs={allowed.map(({ value, label }) => ({ value, label }))} />}
       <div className="mt24">
-        {tab === "brand" && <BrandTab />}
+        {tab === "brand" && <BrandTab onDirty={setBrandDirty} />}
         {tab === "facebook" && <FacebookTab />}
         {tab === "sources" && <SourcesTab />}
         {tab === "privacy" && <PrivacyTab />}
         {tab === "system" && <SystemTab />}
       </div>
+      {pendingTab && (
+        <ConfirmModal
+          title="Leave without saving?"
+          warning="Your changes to the brand guidelines haven't been saved."
+          confirmLabel="Leave without saving"
+          onClose={() => setPendingTab(null)}
+          onConfirm={() => {
+            setBrandDirty(false);
+            setParams({ tab: pendingTab });
+            setPendingTab(null);
+          }}
+        >
+          <p className="muted mt0">Stay on this tab and press "Save guidelines" to keep them.</p>
+        </ConfirmModal>
+      )}
     </>
   );
 }
@@ -49,31 +101,44 @@ interface Brand {
 
 const lines = (v: string) => v.split("\n").map((s) => s.trim()).filter(Boolean);
 
-function BrandTab() {
+const toForm = (brand: Brand): Record<keyof Brand, string> => ({
+  ...brand,
+  doList: brand.doList.join("\n"),
+  dontList: brand.dontList.join("\n"),
+  bannedPhrases: brand.bannedPhrases.join("\n"),
+  alwaysHashtags: brand.alwaysHashtags.join(" "),
+});
+
+function BrandTab({ onDirty }: { onDirty: (dirty: boolean) => void }) {
   const toast = useToast();
   const { data, error, reload } = useLoad(() => api<{ brand: Brand }>("/settings/brand"), []);
   const [b, setB] = useState<Record<keyof Brand, string> | null>(null);
+  const [saved, setSaved] = useState<Record<keyof Brand, string> | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    if (data)
-      setB({
-        ...data.brand,
-        doList: data.brand.doList.join("\n"),
-        dontList: data.brand.dontList.join("\n"),
-        bannedPhrases: data.brand.bannedPhrases.join("\n"),
-        alwaysHashtags: data.brand.alwaysHashtags.join(" "),
-      });
+    if (data) {
+      const f = toForm(data.brand);
+      setB(f);
+      setSaved(f);
+    }
   }, [data]);
+  const dirty = !!b && !!saved && (Object.keys(b) as (keyof Brand)[]).some((k) => b[k] !== saved[k]);
+  useEffect(() => onDirty(dirty), [dirty, onDirty]);
+  // Leaving the tab by other means (e.g. the sidebar) clears the flag.
+  useEffect(() => () => onDirty(false), [onDirty]);
   if (error) return <LoadError error={error} retry={reload} />;
   if (!b) return <Skeleton />;
   const set = (k: keyof Brand) => (e: { target: { value: string } }) => setB({ ...b, [k]: e.target.value });
   async function save() {
     setBusy(true);
     try {
-      await api("/settings/brand", {
+      const r = await api<{ brand: Brand }>("/settings/brand", {
         method: "PUT",
         body: { ...b, doList: lines(b!.doList), dontList: lines(b!.dontList), bannedPhrases: lines(b!.bannedPhrases), alwaysHashtags: b!.alwaysHashtags.split(/\s+/).filter(Boolean) },
       });
+      const f = toForm(r.brand);
+      setB(f);
+      setSaved(f);
       toast.ok("Brand guidelines saved", "The AI studio uses them from the next request.");
     } catch (e) {
       toast.err("Couldn't save", (e as Error).message);
@@ -101,7 +166,8 @@ function BrandTab() {
         </div>
       </div>
       <div className="row" style={{ justifyContent: "flex-end" }}>
-        <Button variant="primary" loading={busy} onClick={save}>
+        {dirty && <span className="note mt0">Unsaved changes</span>}
+        <Button variant="primary" loading={busy} disabled={!dirty} onClick={save}>
           Save guidelines
         </Button>
       </div>
@@ -119,6 +185,7 @@ interface MetaInfo {
   humanAgentTag: boolean;
   publishDryRun: boolean;
   messengerDryRun: boolean;
+  tokenSource?: "settings" | "env" | "none";
   lastSync: { at: string; ok: boolean; error?: string } | null;
 }
 
@@ -170,6 +237,9 @@ function FacebookTab() {
           </Button>
         </div>
         {data.source === "env" && <p className="note mt0">Currently using the Page details from .env. Saving here overrides them.</p>}
+        {data.source === "settings" && data.tokenSource === "env" && (
+          <p className="note mt0">Using the Page ID saved here with the access token from .env. Paste a token above to store one here instead.</p>
+        )}
       </div>
       <div className="board stackv" style={{ gap: 12 }}>
         <h2 className="section">Status</h2>
@@ -177,9 +247,9 @@ function FacebookTab() {
           <dt>Graph API</dt>
           <dd>{data.graphVersion}</dd>
           <dt>Publishing</dt>
-          <dd>{data.publishDryRun ? <Tag tone="warn">Dry run: posts aren't sent</Tag> : <Tag tone="good">Live</Tag>}</dd>
+          <dd>{data.publishDryRun ? <Tag tone="warn">Test mode: posts aren't sent to Facebook</Tag> : <Tag tone="good">Live</Tag>}</dd>
           <dt>Messenger</dt>
-          <dd>{data.messengerDryRun ? <Tag tone="warn">Dry run: replies aren't sent</Tag> : <Tag tone="good">Live</Tag>}</dd>
+          <dd>{data.messengerDryRun ? <Tag tone="warn">Test mode: replies aren't sent</Tag> : <Tag tone="good">Live</Tag>}</dd>
           <dt>Webhook</dt>
           <dd>{data.webhookConfigured ? <Tag tone="good">Configured</Tag> : <Tag tone="bad">Set META_APP_SECRET and META_VERIFY_TOKEN</Tag>}</dd>
           <dt>Human agent tag</dt>
@@ -191,7 +261,7 @@ function FacebookTab() {
           Callback URL: <span className="code">{origin}/api/webhooks/meta</span> (must be public HTTPS: use a tunnel such as Cloudflare Tunnel while running locally). Subscribe the Page to <span className="code">messages</span> and{" "}
           <span className="code">messaging_postbacks</span> only.
         </Alert>
-        <p className="note mt0">Dry-run switches and the webhook secrets live in .env so they can't be changed from the browser.</p>
+        <p className="note mt0">Test mode switches (PUBLISH_DRY_RUN, MESSENGER_DRY_RUN) and the webhook secrets live in .env so they can't be changed from the browser.</p>
       </div>
     </div>
   );
@@ -200,32 +270,59 @@ function FacebookTab() {
 interface Source {
   id: number;
   name: string;
-  kind: "rss" | "pubmed" | "newsapi";
+  kind: "rss" | "pubmed" | "newsapi" | "google_trends";
   url: string | null;
   query: string | null;
   enabled: boolean;
 }
 
+const EMPTY_SOURCE = { name: "", kind: "rss" as Source["kind"], url: "", query: "" };
+
 function SourcesTab() {
   const toast = useToast();
   const { data, error, reload } = useLoad(() => api<{ sources: Source[] }>("/trends/sources"), []);
-  const [n, setN] = useState({ name: "", kind: "rss" as Source["kind"], url: "", query: "" });
+  const [n, setN] = useState(EMPTY_SOURCE);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<Source | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
   if (error) return <LoadError error={error} retry={reload} />;
   if (!data) return <Skeleton />;
-  const run = async (fn: () => Promise<unknown>, ok: string) => {
+  /** Runs a change and reports whether it worked, so callers only reset their form on success. */
+  const run = async (fn: () => Promise<unknown>, ok: string): Promise<boolean> => {
     try {
       await fn();
       toast.ok(ok);
       await reload();
+      return true;
     } catch (e) {
       toast.err("That didn't work", (e as Error).message);
+      return false;
     }
   };
+  async function add() {
+    if (adding) return;
+    setAdding(true);
+    const done = await run(
+      () => api("/trends/sources", { body: { name: n.name.trim(), kind: n.kind, url: n.kind === "rss" ? n.url.trim() : null, query: n.kind === "rss" ? null : n.query.trim(), enabled: true } }),
+      "Source added",
+    );
+    // Keep what was typed if the server refused it, so it can be corrected.
+    if (done) setN(EMPTY_SOURCE);
+    setAdding(false);
+  }
+  async function remove(src: Source) {
+    setBusyId(src.id);
+    const done = await run(() => api(`/trends/sources/${src.id}`, { method: "DELETE" }), "Source removed");
+    setBusyId(null);
+    if (done) setRemoving(null);
+  }
   return (
     <div className="stackv" style={{ gap: 20 }}>
       <Alert tone="info" title="Only use sources that permit this">
-        RSS feeds published for syndication, PubMed (NCBI E-utilities) and NewsAPI with your own key. The scanner reads headlines and summaries only, never personal pages or profiles.
+        RSS feeds published for syndication, Google Trends' public "Trending now" feed, PubMed (NCBI E-utilities) and NewsAPI with your own key. The scanner reads headlines and summaries
+        only, never personal pages or profiles.
       </Alert>
+      <LiveTrendsBox />
       <div className="table-wrap">
         <div className="table-scroll">
           <table>
@@ -245,16 +342,25 @@ function SourcesTab() {
                     <b style={{ fontWeight: 600 }}>{s.name}</b>
                   </td>
                   <td>
-                    <Tag tone="outline">{s.kind.toUpperCase()}</Tag>
+                    <Tag tone="outline">{s.kind === "google_trends" ? "GOOGLE TRENDS" : s.kind.toUpperCase()}</Tag>
                   </td>
                   <td className="small" style={{ maxWidth: 420, wordBreak: "break-all" }}>
                     {s.url ?? s.query}
                   </td>
                   <td>
-                    <Switch label={<span className="sr-only">Enabled</span>} checked={s.enabled} onChange={(v) => run(() => api(`/trends/sources/${s.id}`, { method: "PATCH", body: { enabled: v } }), v ? "Source on" : "Source off")} />
+                    <Switch
+                      label={<span className="sr-only">Enabled</span>}
+                      checked={s.enabled}
+                      onChange={async (v) => {
+                        if (busyId) return;
+                        setBusyId(s.id);
+                        await run(() => api(`/trends/sources/${s.id}`, { method: "PATCH", body: { enabled: v } }), v ? "Source on" : "Source off");
+                        setBusyId(null);
+                      }}
+                    />
                   </td>
                   <td className="right">
-                    <IconButton icon="trash" label={`Remove ${s.name}`} danger onClick={() => run(() => api(`/trends/sources/${s.id}`, { method: "DELETE" }), "Source removed")} />
+                    <IconButton icon="trash" label={`Remove ${s.name}`} danger onClick={() => setRemoving(s)} />
                   </td>
                 </tr>
               ))}
@@ -272,29 +378,89 @@ function SourcesTab() {
             onChange={(e) => setN({ ...n, kind: e.target.value as Source["kind"] })}
             options={[
               { value: "rss", label: "RSS / Atom feed" },
+              { value: "google_trends", label: "Google Trends (trending now)" },
               { value: "pubmed", label: "PubMed search" },
               { value: "newsapi", label: "NewsAPI search" },
             ]}
           />
           {n.kind === "rss" ? (
             <TextField label="Feed URL" value={n.url} onChange={(e) => setN({ ...n, url: e.target.value })} placeholder="https://…" />
+          ) : n.kind === "google_trends" ? (
+            <TextField
+              label="Country code"
+              value={n.query}
+              maxLength={2}
+              placeholder="PH"
+              hint="Two letters: PH, US, SG, AE…"
+              onChange={(e) => setN({ ...n, query: e.target.value.toUpperCase() })}
+            />
           ) : (
             <TextField label="Search query" value={n.query} onChange={(e) => setN({ ...n, query: e.target.value })} />
           )}
           <Button
             variant="primary"
-            disabled={!n.name || (n.kind === "rss" ? !n.url : !n.query)}
-            onClick={() =>
-              run(
-                () => api("/trends/sources", { body: { name: n.name, kind: n.kind, url: n.kind === "rss" ? n.url : null, query: n.kind === "rss" ? null : n.query, enabled: true } }),
-                "Source added",
-              ).then(() => setN({ name: "", kind: "rss", url: "", query: "" }))
-            }
+            loading={adding}
+            disabled={!n.name.trim() || (n.kind === "rss" ? !/^https?:\/\/\S+/i.test(n.url.trim()) : n.kind === "google_trends" ? !/^[A-Z]{2}$/.test(n.query) : !n.query.trim())}
+            onClick={add}
           >
             Add
           </Button>
         </div>
+        {n.kind === "rss" && n.url.trim() !== "" && !/^https?:\/\//i.test(n.url.trim()) && <p className="note">Feed addresses start with https:// (or http://).</p>}
       </div>
+      {removing && (
+        <ConfirmModal
+          title={`Remove ${removing.name}?`}
+          warning="The scanner stops reading this source. Past scans keep their headlines."
+          confirmLabel="Remove source"
+          busy={busyId === removing.id}
+          onClose={() => setRemoving(null)}
+          onConfirm={() => remove(removing)}
+        >
+          <p className="muted mt0 content-break">{removing.url ?? removing.query}</p>
+        </ConfirmModal>
+      )}
+    </div>
+  );
+}
+
+function LiveTrendsBox() {
+  const toast = useToast();
+  const { can } = useAuth();
+  const isAdmin = can("settings.manage");
+  const { data, reload } = useLoad(() => api<{ webSearch: boolean; keySet: boolean; autoRefreshMinutes: number }>("/trends/live"), []);
+  if (!data) return null;
+  const save = async (webSearch: boolean) => {
+    try {
+      await api("/trends/live", { method: "PUT", body: { webSearch } });
+      toast.ok(webSearch ? "Web search on" : "Web search off", webSearch ? "New Google trends are looked up from the next scan." : undefined);
+      await reload();
+    } catch (e) {
+      toast.err("That didn't work", (e as Error).message);
+    }
+  };
+  return (
+    <div className="board">
+      <p className="label">Live Google trends</p>
+      <div className="spread" style={{ alignItems: "flex-start" }}>
+        <div style={{ maxWidth: 640 }}>
+          <b style={{ fontWeight: 600 }}>Look up each trending health search on the web</b>
+          <p className="note mt0" style={{ marginTop: 4 }}>
+            Uses Ollama web search so the AI can explain why a search is trending, not just repeat the headline. Only the trending search term is sent to ollama.com, never
+            inquiry data.
+            {!data.keySet &&
+              (isAdmin
+                ? " To turn it on, create a key at ollama.com (Settings → Keys), add it to .env as OLLAMA_API_KEY and restart the app."
+                : " It isn't set up on this server yet: ask your administrator to turn it on.")}
+          </p>
+        </div>
+        <Switch label={<span className="sr-only">Web search</span>} checked={data.webSearch && data.keySet} onChange={(v) => (data.keySet ? save(v) : toast.err(isAdmin ? "Add OLLAMA_API_KEY to .env first" : "Ask your administrator to set up web search first"))} />
+      </div>
+      <p className="note">
+        {data.autoRefreshMinutes
+          ? `Trends are rescanned automatically every ${data.autoRefreshMinutes} minutes.${isAdmin ? " Change TRENDS_AUTO_REFRESH_MINUTES in .env to adjust." : ""}`
+          : `Automatic rescans are off.${isAdmin ? " Set TRENDS_AUTO_REFRESH_MINUTES in .env to turn them on." : " Ask your administrator if you'd like them on."}`}
+      </p>
     </div>
   );
 }
@@ -312,7 +478,16 @@ function PrivacyTab() {
   useEffect(() => {
     if (con.data) setC(con.data.consent);
   }, [con.data]);
-  if (ret.error || con.error) return <LoadError error={(ret.error || con.error)!} />;
+  if (ret.error || con.error)
+    return (
+      <LoadError
+        error={(ret.error || con.error)!}
+        retry={() => {
+          if (ret.error) void ret.reload();
+          if (con.error) void con.reload();
+        }}
+      />
+    );
   if (!r || !c) return <Skeleton />;
 
   const go = async (label: string, fn: () => Promise<unknown>, ok: string) => {

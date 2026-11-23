@@ -2,9 +2,21 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { CAMPAIGN_STATUS, fmtCompact, fmtDate, fmtNum, POST_STATUS } from "../lib/format";
+import { BUSINESS_TZ_LABEL, CAMPAIGN_STATUS, fmtBiz, fmtCompact, fmtNum, POST_STATUS } from "../lib/format";
 import { useToast } from "../components/Toast";
-import { Button, Empty, KpiCard, LinkButton, LoadError, Modal, PageHead, SelectField, Skeleton, StatusTag, TextArea, TextField } from "../components/ui";
+import { Button, Empty, KpiCard, LoadError, Modal, PageHead, SelectField, Skeleton, StatusTag, TextArea, TextField } from "../components/ui";
+import { Icon } from "../components/Icons";
+
+/** Formats a DATE column ("YYYY-MM-DD") as that calendar day, never shifted by the viewer's time zone. */
+function fmtDay(v: string | null | undefined) {
+  if (!v) return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(v);
+  if (!m) return v;
+  return new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric" }).format(new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])));
+}
+const fmtRange = (a: string | null, b: string | null) => (a || b ? `${fmtDay(a)} – ${fmtDay(b)}` : "No dates");
+/** Start of a Philippine calendar day, in ms. */
+const phDayStart = (d: string) => Date.parse(`${d.slice(0, 10)}T00:00:00+08:00`);
 
 interface Campaign {
   id: number;
@@ -38,7 +50,9 @@ function CampaignForm({ initial, onClose, onSaved }: { initial?: Campaign; onClo
   });
   const [busy, setBusy] = useState(false);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((x) => ({ ...x, [k]: e.target.value }));
+  const dateErr = f.start_date && f.end_date && f.end_date < f.start_date ? "The end date can't be before the start date." : null;
   async function save() {
+    if (dateErr) return;
     setBusy(true);
     try {
       const body = { ...f, start_date: f.start_date || null, end_date: f.end_date || null, objective: f.objective || null, description: f.description || null };
@@ -62,7 +76,7 @@ function CampaignForm({ initial, onClose, onSaved }: { initial?: Campaign; onClo
           <Button variant="quiet" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" loading={busy} disabled={!f.name.trim()} onClick={save}>
+          <Button variant="primary" loading={busy} disabled={!f.name.trim() || !!dateErr} onClick={save}>
             Save
           </Button>
         </>
@@ -73,8 +87,8 @@ function CampaignForm({ initial, onClose, onSaved }: { initial?: Campaign; onClo
         <TextField label="Objective" optional value={f.objective} onChange={set("objective")} placeholder="e.g. Raise awareness of cervical cancer screening" />
         <TextArea label="Description" optional value={f.description} onChange={set("description")} rows={4} />
         <div className="grid g2">
-          <TextField label="Starts" type="date" value={f.start_date} onChange={set("start_date")} />
-          <TextField label="Ends" type="date" value={f.end_date} onChange={set("end_date")} />
+          <TextField label="Starts" optional type="date" value={f.start_date} onChange={set("start_date")} max={f.end_date || undefined} />
+          <TextField label="Ends" optional type="date" value={f.end_date} onChange={set("end_date")} min={f.start_date || undefined} error={dateErr} />
         </div>
         <SelectField label="Status" value={f.status} onChange={set("status")} options={Object.entries(CAMPAIGN_STATUS).map(([value, s]) => ({ value, label: s.label }))} />
       </div>
@@ -125,9 +139,7 @@ export function CampaignsPage() {
                       </Link>
                       <span className="sub">{c.objective}</span>
                     </td>
-                    <td className="nowrap">
-                      {fmtDate(c.start_date)} – {fmtDate(c.end_date)}
-                    </td>
+                    <td className="nowrap">{fmtRange(c.start_date, c.end_date)}</td>
                     <td>
                       <StatusTag map={CAMPAIGN_STATUS} value={c.status} />
                     </td>
@@ -163,8 +175,11 @@ export function CampaignDetailPage() {
   const c = data.campaign;
   const engagement = c.reactions + c.comments + c.shares;
   const now = Date.now();
+  const from = { from: { to: `/campaigns/${c.id}`, label: c.name } };
   const elapsed =
-    c.start_date && c.end_date ? Math.max(0, Math.min(100, ((now - Date.parse(c.start_date)) / (Date.parse(c.end_date) + 86400_000 - Date.parse(c.start_date))) * 100)) : undefined;
+    c.start_date && c.end_date
+      ? Math.max(0, Math.min(100, ((now - phDayStart(c.start_date)) / (phDayStart(c.end_date) + 86400_000 - phDayStart(c.start_date))) * 100))
+      : undefined;
   return (
     <>
       <PageHead
@@ -172,7 +187,7 @@ export function CampaignDetailPage() {
         title={c.name}
         sub={
           <>
-            <StatusTag map={CAMPAIGN_STATUS} value={c.status} /> {fmtDate(c.start_date)} – {fmtDate(c.end_date)}
+            <StatusTag map={CAMPAIGN_STATUS} value={c.status} /> {fmtRange(c.start_date, c.end_date)}
             {c.objective ? ` · ${c.objective}` : ""}
           </>
         }
@@ -180,9 +195,10 @@ export function CampaignDetailPage() {
           <>
             {can("campaigns.manage") && <Button onClick={() => setEdit(true)} icon="edit">Edit</Button>}
             {can("posts.edit") && (
-              <LinkButton to={`/posts/new?campaign=${c.id}`} variant="primary" icon="plus">
+              <Link to={`/posts/new?campaign=${c.id}`} state={from} className="btn btn-primary">
+                <Icon name="plus" />
                 Add a post
-              </LinkButton>
+              </Link>
             )}
           </>
         }
@@ -207,7 +223,7 @@ export function CampaignDetailPage() {
                 <tr>
                   <th>Post</th>
                   <th>Status</th>
-                  <th>Date</th>
+                  <th>Date ({BUSINESS_TZ_LABEL})</th>
                   <th className="num">Reach</th>
                   <th className="num">Reactions</th>
                   <th className="num">Comments</th>
@@ -218,14 +234,14 @@ export function CampaignDetailPage() {
                 {data.posts.map((p) => (
                   <tr key={p.id}>
                     <td>
-                      <Link className="name" to={`/posts/${p.id}`}>
+                      <Link className="name" to={`/posts/${p.id}`} state={from}>
                         {p.title}
                       </Link>
                     </td>
                     <td>
                       <StatusTag map={POST_STATUS} value={p.status} />
                     </td>
-                    <td className="nowrap">{fmtDate(p.published_at ?? p.scheduled_at, true)}</td>
+                    <td className="nowrap">{fmtBiz(p.published_at ?? p.scheduled_at)}</td>
                     <td className="num">{fmtNum(p.reach)}</td>
                     <td className="num">{fmtNum(p.reactions)}</td>
                     <td className="num">{fmtNum(p.comments)}</td>

@@ -1,11 +1,12 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { api, useLoad } from "../lib/api";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { api, ApiError, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ago, CONTACT_LABEL, LEAD_STATUS, SOURCE_LABEL } from "../lib/format";
 import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icons";
 import { Alert, Avatar, Button, Check, Empty, KpiCard, LoadError, Modal, PageHead, SearchInput, Seg, SelectField, Skeleton, StatusTag, Tag, TextArea, TextField } from "../components/ui";
+import "../styles/inquiries.css";
 
 interface LeadRow {
   id: number;
@@ -28,21 +29,62 @@ interface LeadRow {
 }
 interface Stats {
   stats: { open: number; new: number; needs_review: number; unassigned: number; overdue: number; this_week: number; pending_replies: number };
+  byCategory: { category: string; label: string; n: number }[];
   categories: { value: string; label: string }[];
 }
 
 type View = "all" | "review" | "mine" | "unassigned" | "followups" | "closed";
+const VIEWS: View[] = ["all", "review", "mine", "unassigned", "followups", "closed"];
+
+/** Maps zod issues from the server ({ path, message }[]) to field errors. */
+function fieldErrors(e: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  const details = e instanceof ApiError ? e.details : null;
+  if (Array.isArray(details))
+    for (const d of details as { path?: (string | number)[]; message?: string }[]) {
+      const k = d.path?.[0];
+      if (k !== undefined && d.message && !out[String(k)]) out[String(k)] = d.message;
+    }
+  return out;
+}
 
 export function LeadsPage() {
   const { can } = useAuth();
-  // Open on all open inquiries so nothing looks missing; "Needs review" is one click away
-  const [view, setView] = useState<View>("all");
-  const [q, setQ] = useState("");
-  const [category, setCategory] = useState("");
+  // Tab, category and search live in the URL (?filter=review&category=…&q=…) so links and the nav badge land on the right view.
+  const [params, setParams] = useSearchParams();
+  const rawView = params.get("filter") as View | null;
+  const view: View = rawView && VIEWS.includes(rawView) ? rawView : "all";
+  const category = params.get("category") ?? "";
+  const q = params.get("q") ?? "";
+  const [qInput, setQInput] = useState(q);
   const [adding, setAdding] = useState(false);
+
+  const setParam = (k: string, v: string | null) =>
+    setParams(
+      (cur) => {
+        const next = new URLSearchParams(cur);
+        if (v) next.set(k, v);
+        else next.delete(k);
+        return next;
+      },
+      { replace: k === "q" },
+    );
+
+  // Search waits until typing pauses (300 ms) so every keystroke doesn't hit the server.
+  useEffect(() => {
+    if (qInput === q) return;
+    const t = setTimeout(() => setParam("q", qInput.trim() || null), 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qInput]);
+  // Back/forward or a link changed the search: show it in the box.
+  useEffect(() => setQInput(q), [q]);
+
   const stats = useLoad(() => api<Stats>("/leads/stats"), []);
   const { data, error, loading, reload } = useLoad(() => api<{ leads: LeadRow[] }>("/leads", { query: { view, q, category } }), [view, q, category]);
   const s = stats.data?.stats;
+  const refreshing = loading && !!data;
+  const viewLink = (v: View) => `/leads?filter=${v}`;
 
   return (
     <>
@@ -51,24 +93,48 @@ export function LeadsPage() {
         sub="People who messaged the Page or used the website form about a medicine. Prescription, medical, regulatory and availability questions go to the pharmaceutical team before anyone replies."
         actions={can("leads.manage") && <Button variant="primary" icon="plus" onClick={() => setAdding(true)}>Add an inquiry</Button>}
       />
+      {stats.error && (
+        <div style={{ marginBottom: 16 }}>
+          <LoadError error={stats.error} retry={stats.reload} />
+        </div>
+      )}
       {s && (
-        <div className="grid g4" style={{ marginBottom: 24 }}>
-          <KpiCard strong title="Open" sub={`${s.this_week} new this week`} value={s.open} note={`${s.unassigned} not assigned yet`} />
+        <div className="grid g4" style={{ marginBottom: 16 }}>
+          <KpiCard strong title="Open" sub={`${s.this_week} new this week`} value={s.open} note={`${s.new} not picked up yet`} to={viewLink("all")} />
           <KpiCard
             title="Needs pharmaceutical review"
             sub="Inquiries and drafted replies"
             value={s.needs_review + s.pending_replies}
             tag={s.pending_replies ? <Tag tone="warn" dot>{s.pending_replies} replies waiting approval</Tag> : undefined}
+            to={viewLink("review")}
           />
-          <KpiCard title="Follow-ups overdue" sub="Past their follow-up date" value={s.overdue} tag={s.overdue ? <Tag tone="bad" dot>Overdue</Tag> : <Tag tone="good" dot>On track</Tag>} />
-          <KpiCard title="New" sub="Not yet picked up" value={s.new} />
+          <KpiCard
+            title="Follow-ups overdue"
+            sub="Past their follow-up date"
+            value={s.overdue}
+            tag={s.overdue ? <Tag tone="bad" dot>Overdue</Tag> : <Tag tone="good" dot>On track</Tag>}
+            to={viewLink("followups")}
+          />
+          <KpiCard title="Unassigned" sub="Open, with no owner yet" value={s.unassigned} to={viewLink("unassigned")} />
         </div>
       )}
-      <div className="table-wrap">
+      {stats.data && stats.data.byCategory.length > 0 && (
+        <div className="board" style={{ marginBottom: 24, padding: "16px 20px" }}>
+          <p className="label mb0">Open inquiries by category</p>
+          <div className="inq-cats" role="group" aria-label="Filter by category">
+            {stats.data.byCategory.map((c) => (
+              <button key={c.category} type="button" className="inq-cat" aria-pressed={category === c.category} onClick={() => setParam("category", category === c.category ? null : c.category)}>
+                {c.label} <b>{c.n}</b>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className={`table-wrap ${refreshing ? "inq-loading" : ""}`} aria-busy={loading || undefined}>
         <div className="toolbar">
           <div className="row">
-            <SearchInput value={q} onChange={setQ} placeholder="Search medicine, country or INQ number" />
-            <select className="select" style={{ height: 40, width: 220 }} value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Category">
+            <SearchInput value={qInput} onChange={setQInput} placeholder="Search medicine, country or INQ number" />
+            <select className="select" style={{ height: 40, width: 220 }} value={category} onChange={(e) => setParam("category", e.target.value || null)} aria-label="Category">
               <option value="">All categories</option>
               {stats.data?.categories.map((c) => (
                 <option key={c.value} value={c.value}>
@@ -80,7 +146,7 @@ export function LeadsPage() {
           <Seg
             label="View"
             value={view}
-            onChange={setView}
+            onChange={(v) => setParam("filter", v === "all" ? null : v)}
             options={[
               { value: "review", label: "Needs review" },
               { value: "mine", label: "Mine" },
@@ -91,6 +157,11 @@ export function LeadsPage() {
             ]}
           />
         </div>
+        {refreshing && (
+          <div className="inq-loading-label" role="status">
+            <span className="spin" /> Loading…
+          </div>
+        )}
         {error && (
           <div style={{ padding: 16 }}>
             <LoadError error={error} retry={reload} />
@@ -171,33 +242,86 @@ export function LeadsPage() {
               </tbody>
             </table>
           </div>
-        ) : (
-          <Empty title="No inquiries here">{view === "review" ? "Nothing is waiting for the pharmaceutical team." : "Inquiries from Messenger and the website form appear here."}</Empty>
-        )}
+        ) : !error ? (
+          <Empty title="No inquiries here">
+            {q || category
+              ? "Nothing matches this search or category. Clear the filters to see more."
+              : view === "review"
+                ? "Nothing is waiting for the pharmaceutical team."
+                : "Inquiries from Messenger and the website form appear here."}
+          </Empty>
+        ) : null}
       </div>
-      {adding && <AddLeadModal categories={stats.data?.categories ?? []} onClose={() => setAdding(false)} />}
+      {adding && (
+        <AddLeadModal
+          onClose={() => setAdding(false)}
+          onAdded={() => {
+            setAdding(false);
+            void reload();
+            void stats.reload();
+          }}
+        />
+      )}
     </>
   );
 }
 
-function AddLeadModal({ onClose }: { categories: { value: string; label: string }[]; onClose: () => void }) {
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function AddLeadModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
   const toast = useToast();
   const nav = useNavigate();
   const [f, setF] = useState({ name: "", email: "", phone: "", medicine_name: "", destination_country: "", contact_preference: "email", inquiry: "" });
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [errs, setErrs] = useState<Record<string, string>>({});
+  const [tried, setTried] = useState(false);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((x) => ({ ...x, [k]: e.target.value }));
+  const byEmail = f.contact_preference === "email";
+
+  function validate() {
+    const e: Record<string, string> = {};
+    if (!f.medicine_name.trim()) e.medicine_name = "Enter the medicine";
+    if (!f.destination_country.trim()) e.destination_country = "Enter the country";
+    if (byEmail && !EMAIL_RE.test(f.email.trim())) e.email = f.email.trim() ? "That doesn't look like an email address" : "Enter the email address to reply to";
+    if (!byEmail && f.phone.replace(/\D/g, "").length < 7) e.phone = f.phone.trim() ? "Enter the full number, with the country code" : "Enter the phone number to use";
+    if (!consent) e.consent_confirmed = "Confirm the person agreed to us keeping their details";
+    return e;
+  }
+  const shown = tried ? { ...validate(), ...errs } : errs;
+
   async function save() {
-    setBusy(true);
+    setTried(true);
     setErr(null);
+    setErrs({});
+    if (Object.keys(validate()).length) return;
+    setBusy(true);
     try {
-      const r = await api<{ id: number; ref: string }>("/leads", { body: { ...f, email: f.email || undefined, phone: f.phone || undefined, consent_confirmed: consent } });
-      toast.ok(`Inquiry ${r.ref} added`);
-      nav(`/leads/${r.id}`);
+      const r = await api<{ id: number; ref: string; visible?: boolean }>("/leads", {
+        body: {
+          name: f.name.trim() || undefined,
+          medicine_name: f.medicine_name.trim(),
+          destination_country: f.destination_country.trim(),
+          contact_preference: f.contact_preference,
+          inquiry: f.inquiry.trim() || undefined,
+          // Only the contact detail for the chosen method is sent and kept.
+          email: byEmail ? f.email.trim() : undefined,
+          phone: byEmail ? undefined : f.phone.trim(),
+          consent_confirmed: consent,
+        },
+      });
+      if (r.visible === false) {
+        toast.ok(`Inquiry ${r.ref} added`, "It needs the pharmaceutical team, so it was assigned to them.");
+        onAdded();
+      } else {
+        toast.ok(`Inquiry ${r.ref} added`);
+        nav(`/leads/${r.id}`);
+      }
     } catch (e) {
-      setErr((e as Error).message);
-    } finally {
+      const fe = fieldErrors(e);
+      setErrs(fe);
+      if (!Object.keys(fe).length) setErr((e as Error).message);
       setBusy(false);
     }
   }
@@ -205,14 +329,14 @@ function AddLeadModal({ onClose }: { categories: { value: string; label: string 
     <Modal
       wide
       title="Add an inquiry"
-      onClose={onClose}
+      onClose={busy ? () => undefined : onClose}
       actions={
         <>
-          <Button variant="quiet" onClick={onClose}>
+          <Button variant="quiet" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="primary" loading={busy} disabled={!consent || !f.medicine_name || !f.destination_country} onClick={save}>
-            Add inquiry
+          <Button variant="primary" loading={busy} onClick={save}>
+            {busy ? "Adding…" : "Add inquiry"}
           </Button>
         </>
       }
@@ -220,9 +344,9 @@ function AddLeadModal({ onClose }: { categories: { value: string; label: string 
       <p className="muted mt0">For inquiries that came by phone or in person. Collect only what's needed to answer.</p>
       {err && <Alert tone="bad">{err}</Alert>}
       <div className="grid g2 mt16">
-        <TextField label="Medicine" value={f.medicine_name} onChange={set("medicine_name")} autoFocus />
-        <TextField label="Destination country" value={f.destination_country} onChange={set("destination_country")} />
-        <TextField label="Name" optional value={f.name} onChange={set("name")} />
+        <TextField label="Medicine" value={f.medicine_name} onChange={set("medicine_name")} autoFocus error={shown.medicine_name} required />
+        <TextField label="Destination country" value={f.destination_country} onChange={set("destination_country")} error={shown.destination_country} required />
+        <TextField label="Name" optional value={f.name} onChange={set("name")} error={shown.name} />
         <SelectField
           label="Contact by"
           value={f.contact_preference}
@@ -233,14 +357,22 @@ function AddLeadModal({ onClose }: { categories: { value: string; label: string 
             { value: "whatsapp", label: "WhatsApp" },
           ]}
         />
-        <TextField label="Email" optional type="email" value={f.email} onChange={set("email")} />
-        <TextField label="Phone" optional value={f.phone} onChange={set("phone")} placeholder="+63 …" />
+        {byEmail ? (
+          <TextField label="Email" type="email" value={f.email} onChange={set("email")} error={shown.email} required />
+        ) : (
+          <TextField label={f.contact_preference === "whatsapp" ? "WhatsApp number" : "Phone"} value={f.phone} onChange={set("phone")} placeholder="+63 917 123 4567" error={shown.phone} required />
+        )}
       </div>
       <div className="mt16">
-        <TextArea label="What they asked" optional value={f.inquiry} onChange={set("inquiry")} rows={3} hint="Don't record diagnoses or medical history." />
+        <TextArea label="What they asked" optional value={f.inquiry} onChange={set("inquiry")} rows={3} hint="Don't record diagnoses or medical history." error={shown.inquiry} />
       </div>
       <div className="mt16">
         <Check label="The person agreed that we keep these details to answer their inquiry." checked={consent} onChange={setConsent} />
+        {shown.consent_confirmed && (
+          <p className="small" style={{ color: "var(--bad)", margin: "6px 0 0" }} role="alert">
+            {shown.consent_confirmed}
+          </p>
+        )}
       </div>
     </Modal>
   );

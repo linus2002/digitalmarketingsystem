@@ -35,6 +35,8 @@ export const PERMISSIONS = [
   "templates.approve",
   "users.manage",
   "settings.manage",
+  // Brand guidelines, trend sources and the AI bots' team-wide caption rules and style
+  "settings.brand",
   "audit.view",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
@@ -53,6 +55,7 @@ const GRANTS: Record<Role, readonly Permission[]> = {
     "posts.schedule",
     "campaigns.manage",
     "logs.view",
+    "settings.brand",
   ],
   marketer: [...marketingRead, "trends.refresh", "content.generate", "posts.edit"],
   // The pharmaceutical team reviews prescription, medical, regulatory and availability questions

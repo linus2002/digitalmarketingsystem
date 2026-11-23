@@ -24,7 +24,7 @@ const ROLE_HELP: Record<string, string> = {
 };
 
 export function UsersPage() {
-  const { user: me } = useAuth();
+  const { user: me, refresh } = useAuth();
   const toast = useToast();
   const { data, error, loading, reload } = useLoad(() => api<{ users: U[]; roles: { value: string; label: string }[] }>("/users"), []);
   const [edit, setEdit] = useState<(Partial<U> & { password?: string }) | null>(null);
@@ -39,8 +39,11 @@ export function UsersPage() {
       if (edit.id) await api(`/users/${edit.id}`, { method: "PATCH", body: { name: edit.name, role: edit.role, is_active: edit.is_active, password: edit.password || undefined } });
       else await api("/users", { body: { email: edit.email, name: edit.name, role: edit.role, password: edit.password } });
       toast.ok(edit.id ? "User updated" : "User added", edit.id ? undefined : "Share the password with them privately.");
+      const self = edit.id === me?.id;
       setEdit(null);
       await reload();
+      // Your own name shows in the sidebar: pick up the change now
+      if (self) await refresh();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
