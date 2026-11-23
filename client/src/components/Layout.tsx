@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { Icon, type IconName } from "./Icons";
-import { Avatar } from "./ui";
+import { TopBar } from "./TopBar";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
 
@@ -111,7 +111,7 @@ function StatusBanner({ status, isAdmin }: { status: SystemStatus | null; isAdmi
 }
 
 export function Layout() {
-  const { user, can, logout } = useAuth();
+  const { user, can } = useAuth();
   const loc = useLocation();
   const narrow = useNarrow();
   const [open, setOpen] = useState(false);
@@ -239,23 +239,6 @@ export function Layout() {
       <a href="#main" className="skip-link">
         Skip to content
       </a>
-      <div className="topbar">
-        <button
-          ref={menuBtn}
-          type="button"
-          className="btn btn-icon"
-          aria-label="Open menu"
-          aria-expanded={open}
-          aria-controls="side-nav"
-          onClick={() => setOpen(true)}
-        >
-          <Icon name="menu" />
-        </button>
-        <span className="mark" style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--primary)", color: "#fff", display: "grid", placeItems: "center", fontSize: 11, fontWeight: 700 }}>
-          {BRAND.short}
-        </span>
-        <b style={{ fontSize: 14 }}>{BRAND.name}</b>
-      </div>
       {/* Pointer-only dismiss: keyboard users close with Escape or the Close button */}
       {open && <div className="scrim" aria-hidden="true" onClick={() => closeDrawer(true)} />}
       <aside className="side" id="side-nav" ref={sideRef} aria-hidden={drawerHidden || undefined} aria-label="Menu">
@@ -303,30 +286,37 @@ export function Layout() {
             );
           })}
         </nav>
-        <div className="side-foot">
-          <Link to="/account" className="who-link" aria-label={`Your account: ${user?.name ?? ""}`}>
-            <Avatar name={user?.name} size="sm" />
-            <span className="who">
-              <b>{user?.name}</b>
-              <span>{user?.roleLabel}</span>
-            </span>
-          </Link>
-          <div className="side-actions">
-            <Link to="/account" className="btn btn-quiet btn-sm">
-              <Icon name="users" />
-              Account
-            </Link>
-            <button type="button" className="btn btn-quiet btn-sm" onClick={() => void logout()}>
-              <Icon name="logout" />
-              Sign out
-            </button>
-          </div>
-        </div>
       </aside>
-      <main className="main" id="main" ref={mainRef} tabIndex={-1}>
-        <StatusBanner status={status} isAdmin={user?.role === "admin"} />
-        <Outlet />
-      </main>
+      <div className="app-col">
+        <TopBar
+          org={status?.businessName ?? BRAND.org}
+          start={
+            narrow && (
+              <>
+                <button
+                  ref={menuBtn}
+                  type="button"
+                  className="btn btn-icon"
+                  aria-label="Open menu"
+                  aria-expanded={open}
+                  aria-controls="side-nav"
+                  onClick={() => setOpen(true)}
+                >
+                  <Icon name="menu" />
+                </button>
+                <span className="appbar-brand">
+                  <span className="mark">{BRAND.short}</span>
+                  {BRAND.name}
+                </span>
+              </>
+            )
+          }
+        />
+        <main className="main" id="main" ref={mainRef} tabIndex={-1}>
+          <StatusBanner status={status} isAdmin={user?.role === "admin"} />
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }

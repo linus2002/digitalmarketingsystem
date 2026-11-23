@@ -4,6 +4,7 @@ import { one, q, type Db, pool, type Row } from "../lib/db.js";
 import { errMsg, log } from "../lib/logger.js";
 import { fillTemplate, getConsent } from "../lib/settings.js";
 import { SYSTEM_TEMPLATES } from "../db/templates.js";
+import { notify } from "./notifications.js";
 import { classifyInquiry, INQUIRY_CATEGORIES, type InquiryCategory, REVIEW_CATEGORIES, CATEGORY_LABELS, redactContactData } from "./guardrails.js";
 import { sendMessengerText } from "./meta.js";
 import { aiAllowedForInquiries, chatJson } from "./ai.js";
@@ -64,6 +65,8 @@ export async function autoAssign(leadId: number, needsReview: boolean, db: Db = 
   const changed = await q("UPDATE leads SET assigned_to=$2, updated_at=now() WHERE id=$1 AND assigned_to IS NULL RETURNING id", [leadId, pick.id], db);
   if (!changed.length) return null; // someone already owns it: nothing changed, nothing to log
   await addActivity(leadId, "assign", `Assigned automatically to ${pick.name}`, null, db);
+  // No personal details in the notification: just where to look.
+  await notify([pick.id], { kind: "lead.assigned", title: "A new inquiry was assigned to you", body: `Inquiry #${leadId} is waiting for a reply.`, link: `/leads/${leadId}` });
   return pick.id;
 }
 

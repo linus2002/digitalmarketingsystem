@@ -3,6 +3,8 @@ import { z } from "zod";
 import { one, q, tx, type Db, type Row } from "../lib/db.js";
 import { badRequest, conflict, forbidden, intParam, notFound, parse } from "../lib/http.js";
 import { audit } from "../lib/audit.js";
+import { notify, usersWithPerm } from "../services/notifications.js";
+import { fmtPh } from "../services/bots.js";
 import { requirePerm, userCan } from "../middleware/auth.js";
 import { composeMessage } from "../services/publisher.js";
 
@@ -250,6 +252,9 @@ postsRouter.post("/:id/submit", requirePerm("posts.edit"), async (req, res) => {
   await guarded("UPDATE posts SET status='in_review', updated_at=now()", id, allowed, [], "sent for review");
   await review(id, req, "submitted", note);
   await audit(req, "post.submitted", "post", id);
+  // Approvers, except the people who can't approve this one (its author and last editor, unless they're admins).
+  const approvers = (await usersWithPerm("posts.approve", [req.user!.id])).filter((u) => u !== post.created_by && u !== post.last_edited_by);
+  await notify(approvers, { kind: "post.review", title: "A post is waiting for your approval", body: `"${post.title}" from ${req.user!.name}`, link: `/posts/${id}` });
   res.json({ post: await load(id) });
 });
 
@@ -282,6 +287,14 @@ postsRouter.post("/:id/approve", requirePerm("posts.approve"), async (req, res) 
     }
   });
   await audit(req, "post.approved", "post", id, { scheduledAt: b.scheduleAt });
+  if (post.created_by !== req.user!.id)
+    await notify([post.created_by], {
+      kind: "post.approved",
+      level: "good",
+      title: "Your post was approved",
+      body: `${req.user!.name} approved "${post.title}"${b.scheduleAt ? `. It goes out ${fmtPh(new Date(b.scheduleAt))} (Philippine time).` : "."}`,
+      link: `/posts/${id}`,
+    });
   res.json({ post: await load(id) });
 });
 
@@ -293,6 +306,7 @@ postsRouter.post("/:id/request-changes", requirePerm("posts.approve"), async (re
   await guarded("UPDATE posts SET status='changes_requested', updated_at=now()", id, ["in_review"], [], "sent back");
   await review(id, req, "changes_requested", comment);
   await audit(req, "post.changes_requested", "post", id);
+  await notify([post.created_by], { kind: "post.changes", level: "warn", title: "Changes requested on your post", body: `${req.user!.name} on "${post.title}": ${comment}`, link: `/posts/${id}` });
   res.json({ post: await load(id) });
 });
 
