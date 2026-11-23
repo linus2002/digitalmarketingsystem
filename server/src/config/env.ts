@@ -37,7 +37,8 @@ const schema = z.object({
   ADMIN_PASSWORD: z.string().default(""),
   ADMIN_NAME: z.string().default("Administrator"),
 
-  // Which AI writes content: "anthropic" (Claude, cloud) or "ollama" (local model)
+  // Which AI writes content: "anthropic" (Claude, cloud) or "ollama" (local model). Defaults to "anthropic";
+  // it needs ANTHROPIC_API_KEY. Inquiry text is not sent to a cloud provider unless AI_FOR_INQUIRIES=true.
   AI_PROVIDER: z.enum(["anthropic", "ollama"]).default("anthropic"),
   ANTHROPIC_API_KEY: z.string().default(""),
   CLAUDE_MODEL: z.string().default("claude-opus-5-5"),
@@ -48,6 +49,8 @@ const schema = z.object({
   OLLAMA_URL: z.string().default("http://127.0.0.1:11434"),
   OLLAMA_MODEL: z.string().default("llama3.1:8b"),
   OLLAMA_TIMEOUT_MS: z.coerce.number().default(180_000),
+  // Optional: key from ollama.com for Ollama's web search, used to look up live Google trends
+  OLLAMA_API_KEY: z.string().default(""),
 
   META_GRAPH_VERSION: z.string().default("v23.0"),
   META_APP_SECRET: z.string().default(""),
@@ -57,12 +60,15 @@ const schema = z.object({
   META_ENABLE_HUMAN_AGENT_TAG: bool(false),
   META_POST_METRICS: csv("post_impressions,post_impressions_unique,post_clicks,post_media_view,post_total_media_view_unique"),
   META_PAGE_METRICS: csv("page_impressions_unique,page_post_engagements,page_follows,page_media_view,page_total_media_view_unique,page_views_total"),
-  PUBLISH_DRY_RUN: bool(false),
-  MESSENGER_DRY_RUN: bool(false),
+  // Test mode: log instead of calling Facebook. On unless explicitly turned off, so live sending is always a deliberate choice.
+  PUBLISH_DRY_RUN: bool(true),
+  MESSENGER_DRY_RUN: bool(true),
 
   SCHEDULER_ENABLED: bool(true),
   SCHEDULER_INTERVAL_SECONDS: z.coerce.number().min(5).default(30),
   ANALYTICS_SYNC_HOURS: z.coerce.number().min(0).default(6),
+  // How often trends (including live Google trends) are rescanned automatically. 0 = only when someone presses "Scan now".
+  TRENDS_AUTO_REFRESH_MINUTES: z.coerce.number().min(0).default(30),
 
   NEWSAPI_KEY: z.string().default(""),
   NCBI_API_KEY: z.string().default(""),

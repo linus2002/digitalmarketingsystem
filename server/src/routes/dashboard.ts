@@ -24,9 +24,10 @@ dashboardRouter.get("/", async (req, res) => {
     );
     out.attentionPosts = await q(
       `SELECT id, title, status, last_error, updated_at FROM posts
-       WHERE status='failed' OR (status='in_review' AND $1) OR (status='changes_requested' AND created_by=$2)
+       WHERE status='failed' OR (status='in_review' AND $1 AND ($3 OR (created_by IS DISTINCT FROM $2 AND last_edited_by IS DISTINCT FROM $2))) OR (status='changes_requested' AND created_by=$2)
        ORDER BY updated_at DESC LIMIT 6`,
-      [userCan(req, "posts.approve"), uid],
+      // Authors can't approve their own posts (admins can), so those aren't "waiting on your approval".
+      [userCan(req, "posts.approve"), uid, req.user!.role === "admin"],
     );
   }
   if (userCan(req, "analytics.view")) {
@@ -41,17 +42,20 @@ dashboardRouter.get("/", async (req, res) => {
   }
   if (userCan(req, "leads.view")) {
     const all = userCan(req, "leads.view_all");
+    // An agent's scope: inquiries assigned to them, plus unassigned ones they could claim
+    // (consented, and not waiting on pharmaceutical review). Counts and the attention list use the same scope.
+    const scope = `($1 OR assigned_to=$2 OR (assigned_to IS NULL AND consent_given AND NOT needs_review))`;
     out.leads = await one(
       `SELECT count(*) FILTER (WHERE status IN ('new','in_progress','waiting_customer'))::int AS open,
               count(*) FILTER (WHERE needs_review AND status NOT IN ('closed','opted_out'))::int AS needs_review,
               count(*) FILTER (WHERE follow_up_at < now() AND status IN ('new','in_progress','waiting_customer'))::int AS overdue,
               count(*) FILTER (WHERE status='new')::int AS new
-       FROM leads WHERE ($1 OR assigned_to=$2 OR assigned_to IS NULL)`,
+       FROM leads WHERE ${scope}`,
       [all, uid],
     );
     out.attentionLeads = await q(
       `SELECT id, medicine_name, destination_country, category, needs_review, follow_up_at, status FROM leads
-       WHERE ($1 OR assigned_to=$2) AND status IN ('new','in_progress','waiting_customer')
+       WHERE ${scope} AND status IN ('new','in_progress','waiting_customer')
          AND (needs_review OR follow_up_at < now() + interval '4 hours')
        ORDER BY needs_review DESC, follow_up_at NULLS LAST LIMIT 6`,
       [all, uid],

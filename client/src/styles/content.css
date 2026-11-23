@@ -1,0 +1,27 @@
+/* AI content studio, trends and settings (imported by those pages; app.css holds the shared styles). */
+
+.studio-scope {
+  margin: -6px 0 16px;
+}
+.studio-scope a {
+  color: var(--deep);
+  font-weight: 600;
+}
+
+.studio-cancel {
+  justify-content: center;
+}
+
+.studio-brief {
+  background: var(--bench);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  padding: 12px 14px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+/* Long feed addresses in confirm dialogs */
+.content-break {
+  word-break: break-all;
+}

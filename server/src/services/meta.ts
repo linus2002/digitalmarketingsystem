@@ -12,6 +12,8 @@ export class MetaError extends Error {
     public subcode?: number,
     public transient = false,
     public raw?: unknown,
+    /** True when the request may have reached Facebook (timeout / dropped connection after sending). */
+    public uncertain = false,
   ) {
     super(message);
   }
@@ -20,39 +22,88 @@ export class MetaError extends Error {
 // Rate limits and temporary errors are worth retrying; permission and validation errors are not.
 const TRANSIENT_CODES = new Set([1, 2, 4, 17, 32, 341, 368, 613]);
 
-const base = () => `https://graph.facebook.com/${env.META_GRAPH_VERSION}`;
+// Network errors that happen before anything is sent (DNS, refused/unreachable connection, connect timeout).
+// Anything else (read timeout, reset, socket closed) may happen after Facebook received the request.
+const PRE_SEND_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
+
+const GRAPH_HOST = "https://graph.facebook.com";
+const VIDEO_HOST = "https://graph-video.facebook.com";
 
 function appSecretProof(token: string): string | undefined {
   if (!env.META_APP_SECRET) return undefined;
   return crypto.createHmac("sha256", env.META_APP_SECRET).update(token).digest("hex");
 }
 
+function networkErrorCode(err: unknown): string | undefined {
+  const e = err as { code?: string; cause?: { code?: string; cause?: { code?: string } } };
+  return e?.cause?.code ?? e?.cause?.cause?.code ?? e?.code;
+}
+
 export async function graph<T = unknown>(
   path: string,
-  opts: { method?: "GET" | "POST" | "DELETE"; params?: Record<string, string | number | undefined>; body?: unknown; token: string },
+  opts: {
+    method?: "GET" | "POST" | "DELETE";
+    params?: Record<string, string | number | undefined>;
+    body?: unknown;
+    token: string;
+    host?: string;
+    timeoutMs?: number;
+  },
 ): Promise<T> {
-  const url = new URL(`${base()}/${path.replace(/^\//, "")}`);
+  const method = opts.method ?? "GET";
+  const url = new URL(`${opts.host ?? GRAPH_HOST}/${env.META_GRAPH_VERSION}/${path.replace(/^\//, "")}`);
   for (const [k, v] of Object.entries(opts.params ?? {})) if (v !== undefined) url.searchParams.set(k, String(v));
-  url.searchParams.set("access_token", opts.token);
+  // The token goes in a header so it doesn't end up in proxy/access logs; the proof is not secret.
   const proof = appSecretProof(opts.token);
   if (proof) url.searchParams.set("appsecret_proof", proof);
+  const headers: Record<string, string> = { Authorization: `Bearer ${opts.token}` };
+  if (opts.body) headers["Content-Type"] = "application/json";
 
   let res: Response;
   try {
     res = await fetch(url, {
-      method: opts.method ?? "GET",
-      headers: opts.body ? { "Content-Type": "application/json" } : undefined,
+      method,
+      headers,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
     });
   } catch (err) {
-    throw new MetaError(`Couldn't reach Facebook: ${(err as Error).message}`, undefined, undefined, true);
+    const code = networkErrorCode(err);
+    const preSend = !!code && PRE_SEND_CODES.has(code);
+    // Reads are always safe to repeat. A write that may have been received must not be repeated
+    // automatically, or the Page could get the same post twice.
+    if (method === "GET" || preSend) {
+      throw new MetaError(`Couldn't reach Facebook: ${(err as Error).message}`, undefined, undefined, true);
+    }
+    throw new MetaError(
+      `No answer from Facebook (${(err as Error).name === "TimeoutError" ? "timed out" : (code ?? (err as Error).message)}). It may have been posted anyway. Check the Page before retrying, to avoid a duplicate.`,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      true,
+    );
   }
-  const data = (await res.json().catch(() => ({}))) as { error?: { message: string; code: number; error_subcode?: number; is_transient?: boolean } };
+  let data: { error?: { message: string; code: number; error_subcode?: number; is_transient?: boolean } };
+  try {
+    data = (await res.json()) as typeof data;
+  } catch {
+    if (res.ok && method !== "GET") {
+      throw new MetaError("Facebook's answer was cut off. It may have been posted anyway. Check the Page before retrying, to avoid a duplicate.", undefined, undefined, false, undefined, true);
+    }
+    data = {};
+  }
   if (!res.ok || data.error) {
     const e = data.error;
-    const transient = !!e?.is_transient || (e ? TRANSIENT_CODES.has(e.code) : res.status >= 500);
-    throw new MetaError(e?.message ?? `Facebook returned HTTP ${res.status}`, e?.code, e?.error_subcode, transient, data);
+    let transient = !!e?.is_transient || (e ? TRANSIENT_CODES.has(e.code) : res.status >= 500);
+    let uncertain = false;
+    // A bare 5xx on a write (no Graph error body) doesn't tell us whether the post was created.
+    if (!e && res.status >= 500 && method !== "GET") {
+      transient = false;
+      uncertain = true;
+    }
+    const msg = e?.message ?? `Facebook returned HTTP ${res.status}`;
+    throw new MetaError(uncertain ? `${msg}. It may have been posted anyway. Check the Page before retrying, to avoid a duplicate.` : msg, e?.code, e?.error_subcode, transient, data, uncertain);
   }
   return data as T;
 }
@@ -71,8 +122,28 @@ export async function checkConnection() {
   });
 }
 
-export async function publishToPage(post: { message: string; link?: string | null; imageUrl?: string | null }): Promise<{ id: string; raw: unknown }> {
+export async function publishToPage(post: { message: string; link?: string | null; imageUrl?: string | null; videoUrl?: string | null }): Promise<{ id: string; raw: unknown }> {
   const page = await requirePage();
+  if (post.videoUrl) {
+    // Facebook downloads the video from this public URL itself. Uploads go to the video host.
+    const r = await graph<{ id: string }>(`${page.pageId}/videos`, {
+      method: "POST",
+      token: page.token,
+      host: VIDEO_HOST,
+      timeoutMs: 120_000,
+      body: { file_url: post.videoUrl, description: post.message, published: true },
+    });
+    // /videos returns the video id; analytics are keyed by the Page post id, so look it up.
+    // The video is already posted at this point: never throw from here.
+    let postId: string | undefined;
+    try {
+      const v = await graph<{ id: string; post_id?: string }>(r.id, { token: page.token, params: { fields: "post_id" } });
+      postId = v.post_id;
+    } catch {
+      /* fall back to the video id */
+    }
+    return { id: postId ? (postId.includes("_") ? postId : `${page.pageId}_${postId}`) : r.id, raw: { ...r, post_id: postId ?? null } };
+  }
   if (post.imageUrl) {
     const r = await graph<{ id: string; post_id?: string }>(`${page.pageId}/photos`, {
       method: "POST",
@@ -165,10 +236,12 @@ export async function sendMessengerText(
   return { messageId: r.message_id ?? null, dryRun: false };
 }
 
-/** Verifies X-Hub-Signature-256 against the raw request body. */
+/** Verifies X-Hub-Signature-256 against the raw request body. Malformed headers return false. */
 export function verifyWebhookSignature(raw: Buffer, header: string | undefined): boolean {
-  if (!env.META_APP_SECRET || !header?.startsWith("sha256=")) return false;
-  const expected = crypto.createHmac("sha256", env.META_APP_SECRET).update(raw).digest("hex");
-  const given = header.slice(7);
-  return given.length === expected.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+  if (!env.META_APP_SECRET || typeof header !== "string" || !header.startsWith("sha256=")) return false;
+  const given = header.slice(7).trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(given)) return false;
+  const expected = crypto.createHmac("sha256", env.META_APP_SECRET).update(raw).digest();
+  const givenBuf = Buffer.from(given, "hex");
+  return givenBuf.length === expected.length && crypto.timingSafeEqual(givenBuf, expected);
 }

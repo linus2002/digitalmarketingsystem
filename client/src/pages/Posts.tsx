@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { ago, fmtDate, POST_STATUS } from "../lib/format";
-import { Empty, LinkButton, LoadError, PageHead, SearchInput, Skeleton, StatusTag, Tabs, Tag } from "../components/ui";
+import { ago, BUSINESS_TZ_LABEL, fmtBiz, POST_STATUS } from "../lib/format";
+import { Button, Empty, LinkButton, LoadError, PageHead, SearchInput, Skeleton, StatusTag, Tabs, Tag } from "../components/ui";
+import "../styles/posts.css";
 
 interface PostRow {
   id: number;
@@ -28,19 +29,79 @@ const VIEWS = {
   scheduled: { label: "Scheduled", statuses: "scheduled,publishing" },
   published: { label: "Published", statuses: "published" },
   failed: { label: "Failed", statuses: "failed" },
+  cancelled: { label: "Cancelled", statuses: "cancelled" },
 } as const;
 type View = keyof typeof VIEWS;
+const VIEW_KEYS = Object.keys(VIEWS) as View[];
+
+/**
+ * `?status=` accepts a tab name (drafts, review, …) or post statuses (failed, in_review, "draft,changes_requested").
+ * Returns the tab to highlight and the statuses to load.
+ */
+function resolveFilter(raw: string | null): { view: View | null; statuses: string } {
+  const v = (raw ?? "").trim();
+  if (!v || v === "all") return { view: "all", statuses: "" };
+  if (VIEW_KEYS.includes(v as View)) return { view: v as View, statuses: VIEWS[v as View].statuses };
+  const list = v.split(",").map((s) => s.trim()).filter((s) => s in POST_STATUS);
+  if (!list.length) return { view: "all", statuses: "" };
+  const norm = [...list].sort().join(",");
+  const match = VIEW_KEYS.find((k) => VIEWS[k].statuses && VIEWS[k].statuses.split(",").sort().join(",") === norm);
+  if (match) return { view: match, statuses: VIEWS[match].statuses };
+  // A single status that belongs to one tab (e.g. "draft" or "publishing"): show that tab but only that status.
+  const owner = list.length === 1 ? VIEW_KEYS.find((k) => VIEWS[k].statuses.split(",").includes(list[0])) : undefined;
+  return { view: owner ?? null, statuses: list.join(",") };
+}
 
 export function PostsPage() {
   const { can } = useAuth();
-  // Open on "All" so posts are never hidden behind an empty tab; the tab counts show what's waiting
-  const [view, setView] = useState<View>("all");
-  const [q, setQ] = useState("");
+  const [params, setParams] = useSearchParams();
+  const filter = resolveFilter(params.get("status"));
+  const q = params.get("q") ?? "";
+  const [search, setSearch] = useState(q);
+
+  // Keep the box in sync with back/forward
+  useEffect(() => setSearch(q), [q]);
+
+  // Debounce typing: update the URL (and so the query) 300 ms after the last key.
+  useEffect(() => {
+    if (search === q) return;
+    const t = setTimeout(() => {
+      setParams(
+        (p) => {
+          const n = new URLSearchParams(p);
+          if (search.trim()) n.set("q", search);
+          else n.delete("q");
+          return n;
+        },
+        { replace: true },
+      );
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
+
+  const setView = (v: View) =>
+    setParams((p) => {
+      const n = new URLSearchParams(p);
+      if (v === "all") n.delete("status");
+      else n.set("status", v);
+      return n;
+    });
+
   const counts = useLoad(() => api<{ counts: Record<string, number> }>("/posts/counts"), []);
-  const { data, error, loading, reload } = useLoad(() => api<{ posts: PostRow[] }>("/posts", { query: { status: VIEWS[view].statuses, q } }), [view, q]);
+  const filterKey = `${filter.statuses}|${q}`;
+  const { data, error, loading, reload } = useLoad(
+    () => api<{ posts: PostRow[] }>("/posts", { query: { status: filter.statuses, q } }).then((r) => ({ key: filterKey, posts: r.posts })),
+    [filterKey],
+  );
+  // Rows from a different tab are never shown while the new tab loads; a new search on the same tab just dims them.
+  const sameTab = data?.key.split("|")[0] === filter.statuses;
+  const rows = data && sameTab ? data.posts : null;
 
   const c = counts.data?.counts ?? {};
   const n = (statuses: string) => (statuses ? statuses.split(",").reduce((s, k) => s + (c[k] ?? 0), 0) : Object.values(c).reduce((s, v) => s + v, 0));
+  const linkState = { from: { to: `/posts${params.toString() ? `?${params.toString()}` : ""}`, label: "Posts" } };
+  const customLabel = !filter.view || filter.statuses !== VIEWS[filter.view].statuses ? filter.statuses.split(",").map((s) => POST_STATUS[s]?.label ?? s).join(", ") : null;
 
   return (
     <>
@@ -55,37 +116,47 @@ export function PostsPage() {
           )
         }
       />
-      <Tabs value={view} onChange={setView} tabs={(Object.keys(VIEWS) as View[]).map((v) => ({ value: v, label: VIEWS[v].label, n: n(VIEWS[v].statuses) }))} />
+      <Tabs value={(filter.view ?? "") as View} onChange={setView} tabs={VIEW_KEYS.map((v) => ({ value: v, label: VIEWS[v].label, n: n(VIEWS[v].statuses) }))} />
       <div className="table-wrap mt16">
         <div className="toolbar">
-          <SearchInput value={q} onChange={setQ} placeholder="Search posts" />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search posts" />
+          {customLabel && (
+            <span className="row" style={{ gap: 6 }}>
+              <Tag tone="outline">Showing: {customLabel}</Tag>
+              <Button size="sm" variant="quiet" onClick={() => setView("all")}>
+                Show all
+              </Button>
+            </span>
+          )}
         </div>
         {error && (
           <div style={{ padding: 16 }}>
             <LoadError error={error} retry={reload} />
           </div>
         )}
-        {loading && !data ? (
-          <div style={{ padding: 18 }}>
-            <Skeleton />
-          </div>
-        ) : data?.posts.length ? (
-          <div className="table-scroll">
+        {!rows ? (
+          loading || !error ? (
+            <div style={{ padding: 18 }}>
+              <Skeleton />
+            </div>
+          ) : null
+        ) : rows.length ? (
+          <div className={`table-scroll ${loading ? "posts-loading" : ""}`} aria-busy={loading || undefined}>
             <table>
               <thead>
                 <tr>
                   <th>Post</th>
                   <th>Campaign</th>
                   <th>Status</th>
-                  <th>When</th>
+                  <th>When ({BUSINESS_TZ_LABEL})</th>
                   <th>Author</th>
                 </tr>
               </thead>
               <tbody>
-                {data.posts.map((p) => (
+                {rows.map((p) => (
                   <tr key={p.id}>
                     <td>
-                      <Link className="name" to={`/posts/${p.id}`}>
+                      <Link className="name" to={`/posts/${p.id}`} state={linkState}>
                         {p.title}
                       </Link>
                       <span className="sub clamp">{p.message}</span>
@@ -97,7 +168,7 @@ export function PostsPage() {
                       {p.status === "scheduled" && p.attempts > 0 && <div className="sub">Retry {p.attempts} pending</div>}
                     </td>
                     <td className="nowrap">
-                      {p.published_at ? fmtDate(p.published_at, true) : p.scheduled_at ? fmtDate(p.scheduled_at, true) : <span className="muted">Not scheduled</span>}
+                      {p.published_at ? fmtBiz(p.published_at) : p.scheduled_at ? fmtBiz(p.scheduled_at) : <span className="muted">Not scheduled</span>}
                       <div className="sub">Edited {ago(p.updated_at)}</div>
                     </td>
                     <td className="nowrap">
@@ -110,8 +181,8 @@ export function PostsPage() {
             </table>
           </div>
         ) : (
-          <Empty title="No posts here" action={can("posts.edit") ? <LinkButton to="/posts/new" variant="primary" size="sm" icon="plus">New post</LinkButton> : undefined}>
-            {view === "review" ? "Nothing is waiting for approval." : "Posts you create or save from the AI studio appear here."}
+          <Empty title={q ? "No posts match your search" : "No posts here"} action={can("posts.edit") && !q ? <LinkButton to="/posts/new" variant="primary" size="sm" icon="plus">New post</LinkButton> : undefined}>
+            {q ? "Try other words, or look in another tab." : filter.view === "review" ? "Nothing is waiting for approval." : filter.view === "failed" ? "Nothing has failed to publish." : "Posts you create or save from the AI studio appear here."}
           </Empty>
         )}
       </div>

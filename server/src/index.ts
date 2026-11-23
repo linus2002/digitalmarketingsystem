@@ -26,6 +26,8 @@ import { templatesRouter } from "./routes/templates.js";
 import { settingsRouter } from "./routes/settings.js";
 import { publicRouter } from "./routes/public.js";
 import { metaWebhookRouter } from "./routes/webhooks.js";
+import { botsRouter } from "./routes/bots.js";
+import { statusRouter } from "./routes/status.js";
 
 const app = express();
 if (env.TRUST_PROXY) app.set("trust proxy", 1);
@@ -67,6 +69,7 @@ app.use("/api/auth", authRouter);
 
 // Everything below requires a signed-in user.
 app.use("/api", authenticate);
+app.use("/api/status", statusRouter);
 app.use("/api/dashboard", dashboardRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/trends", trendsRouter);
@@ -79,6 +82,7 @@ app.use("/api/logs", logsRouter);
 app.use("/api/leads", leadsRouter);
 app.use("/api/templates", templatesRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/bots", botsRouter);
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "No such API endpoint." });
 });
@@ -104,9 +108,12 @@ async function main() {
     log.info(`API listening on http://${env.HOST}:${env.PORT}`, { env: env.NODE_ENV });
   });
   startJobs();
+  let stopping = false;
   const shutdown = () => {
+    if (stopping) return;
+    stopping = true;
     log.info("Shutting down");
-    stopJobs();
+    stopJobs(); // also cancels the one-off startup runs that haven't fired yet
     server.close(() => pool.end().then(() => process.exit(0)));
     setTimeout(() => process.exit(0), 8000).unref();
   };

@@ -24,8 +24,10 @@ analyticsRouter.get("/overview", requirePerm("analytics.view"), async (req, res)
   const page = await getMetaPage();
   const lastSync = await getSetting("meta.lastSync", null);
 
+  // Meta's daily end_time is the END of the day (midnight Pacific time, e.g. 08:00 UTC the next day),
+  // so the day a value belongs to is the Pacific date just before end_time.
   const rows = await q<{ metric: string; day: string; value: number }>(
-    `SELECT metric, to_char(end_time AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, value FROM page_metrics
+    `SELECT metric, to_char((end_time - interval '1 second') AT TIME ZONE 'America/Los_Angeles', 'YYYY-MM-DD') AS day, value FROM page_metrics
      WHERE period='day' AND end_time >= now() - ($1 || ' days')::interval ORDER BY end_time`,
     [String(days)],
   );

@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { Link } from "react-router-dom";
 import { Icon, type IconName } from "./Icons";
 import { initials, type Tone } from "../lib/format";
@@ -18,10 +18,11 @@ export function Button({
   return (
     <button
       type="button"
-      className={`btn btn-${variant} ${size === "sm" ? "btn-sm" : ""} ${className}`}
-      disabled={loading || rest.disabled}
-      aria-busy={loading || undefined}
       {...rest}
+      className={`btn btn-${variant} ${size === "sm" ? "btn-sm" : ""} ${className}`}
+      // After the spread, so a caller's disabled={false} can't re-enable a busy button (double submits)
+      disabled={!!loading || !!rest.disabled}
+      aria-busy={loading || undefined}
     >
       {loading ? <span className="spin" /> : icon ? <Icon name={icon} /> : null}
       {children}
@@ -58,26 +59,39 @@ interface FieldProps {
   className?: string;
 }
 
-function FieldShell({ label, optional, hint, error, className = "", children }: FieldProps & { children: ReactNode }) {
+function FieldShell({ label, optional, hint, error, className = "", children, hintId }: FieldProps & { children: ReactNode; hintId?: string }) {
   return (
     <label className={`field ${error ? "error" : ""} ${className}`}>
       <span className="lab">
         {label} {optional && <em>(optional)</em>}
       </span>
       {children}
-      {(error || hint) && <span className="hint">{error || hint}</span>}
+      {(error || hint) && (
+        <span className="hint" id={hintId}>
+          {error || hint}
+        </span>
+      )}
     </label>
   );
 }
 
+/** aria-invalid / aria-describedby for a control, so the error (or hint) is announced with the field. */
+function useFieldAria(error: string | null | undefined, hint: ReactNode, describedBy?: string) {
+  const hintId = useId();
+  const has = !!(error || hint);
+  const ids = [describedBy, has ? hintId : undefined].filter(Boolean).join(" ");
+  return { hintId, aria: { "aria-invalid": error ? true : undefined, "aria-describedby": ids || undefined } };
+}
+
 export function TextField({ label, optional, hint, error, className, ...rest }: FieldProps & InputHTMLAttributes<HTMLInputElement>) {
   const [shown, setShown] = useState(false);
+  const { hintId, aria } = useFieldAria(error, hint, rest["aria-describedby"]);
   if (rest.type === "password") {
     // Password fields get a show/hide eye button
     return (
-      <FieldShell {...{ label, optional, hint, error, className }}>
+      <FieldShell {...{ label, optional, hint, error, className, hintId }}>
         <span className="pw-wrap">
-          <input className="input" aria-invalid={!!error || undefined} {...rest} type={shown ? "text" : "password"} />
+          <input className="input" {...rest} {...aria} type={shown ? "text" : "password"} />
           <button
             type="button"
             className="pw-eye"
@@ -96,16 +110,17 @@ export function TextField({ label, optional, hint, error, className, ...rest }: 
     );
   }
   return (
-    <FieldShell {...{ label, optional, hint, error, className }}>
-      <input className="input" aria-invalid={!!error || undefined} {...rest} />
+    <FieldShell {...{ label, optional, hint, error, className, hintId }}>
+      <input className="input" {...rest} {...aria} />
     </FieldShell>
   );
 }
 
 export function TextArea({ label, optional, hint, error, className, ...rest }: FieldProps & TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const { hintId, aria } = useFieldAria(error, hint, rest["aria-describedby"]);
   return (
-    <FieldShell {...{ label, optional, hint, error, className }}>
-      <textarea className="textarea" aria-invalid={!!error || undefined} {...rest} />
+    <FieldShell {...{ label, optional, hint, error, className, hintId }}>
+      <textarea className="textarea" {...rest} {...aria} />
     </FieldShell>
   );
 }
@@ -119,9 +134,10 @@ export function SelectField({
   options,
   ...rest
 }: FieldProps & SelectHTMLAttributes<HTMLSelectElement> & { options: { value: string | number; label: string }[] }) {
+  const { hintId, aria } = useFieldAria(error, hint, rest["aria-describedby"]);
   return (
-    <FieldShell {...{ label, optional, hint, error, className }}>
-      <select className="select" {...rest}>
+    <FieldShell {...{ label, optional, hint, error, className, hintId }}>
+      <select className="select" {...rest} {...aria}>
         {options.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
@@ -183,10 +199,34 @@ export function Seg<T extends string>({
 }
 
 export function Tabs<T extends string>({ value, onChange, tabs }: { value: T; onChange: (v: T) => void; tabs: { value: T; label: string; n?: number }[] }) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const baseId = useId();
+  const current = tabs.some((t) => t.value === value) ? value : tabs[0]?.value;
+  // Arrow keys move between tabs (and select them); Home/End jump to the ends. Only the selected tab is in the Tab order.
+  function onKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
+    const i = tabs.findIndex((t) => t.value === current);
+    let next = -1;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (i + 1) % tabs.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = tabs.length - 1;
+    if (next < 0 || !tabs[next]) return;
+    e.preventDefault();
+    onChange(tabs[next].value);
+    listRef.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  }
   return (
-    <div className="tabs" role="tablist">
+    <div className="tabs" role="tablist" ref={listRef} onKeyDown={onKeyDown}>
       {tabs.map((t) => (
-        <button key={t.value} role="tab" type="button" aria-selected={value === t.value} onClick={() => onChange(t.value)}>
+        <button
+          key={t.value}
+          id={`${baseId}-tab-${t.value}`}
+          role="tab"
+          type="button"
+          aria-selected={current === t.value}
+          tabIndex={current === t.value ? 0 : -1}
+          onClick={() => onChange(t.value)}
+        >
           {t.label}
           {t.n !== undefined && <span className="n">{t.n}</span>}
         </button>
@@ -205,10 +245,11 @@ export function Tag({ tone = "mute", dot, children, title }: { tone?: Tone; dot?
   );
 }
 
-export function StatusTag({ map, value }: { map: Record<string, { label: string; tone: Tone }>; value: string }) {
-  const s = map[value] ?? { label: value, tone: "mute" as Tone };
+export function StatusTag({ map, value }: { map: Record<string, { label: string; tone: Tone; icon?: IconName }>; value: string }) {
+  const s: { label: string; tone: Tone; icon?: IconName } = map[value] ?? { label: value, tone: "mute" };
   return (
-    <Tag tone={s.tone} dot>
+    <Tag tone={s.tone} dot={!s.icon}>
+      {s.icon && <Icon name={s.icon} className="tag-ico" />}
       {s.label}
     </Tag>
   );
@@ -390,11 +431,35 @@ export function LoadError({ error, retry }: { error: string; retry?: () => void 
 }
 
 // ---------------- Layout ----------------
-export function PageHead({ title, sub, crumbs, actions }: { title: ReactNode; sub?: ReactNode; crumbs?: { to?: string; label: string }[]; actions?: ReactNode }) {
+/** Neutral name for browser tabs (public-safe: no company or department names). */
+export const APP_TITLE = "Marketing Hub";
+
+/** Sets the browser tab title for a page that has no PageHead. */
+export function useDocTitle(title: string) {
+  useEffect(() => {
+    document.title = title ? `${title} · ${APP_TITLE}` : APP_TITLE;
+  }, [title]);
+}
+
+export function PageHead({
+  title,
+  sub,
+  crumbs,
+  actions,
+  docTitle,
+}: {
+  title: ReactNode;
+  sub?: ReactNode;
+  crumbs?: { to?: string; label: string }[];
+  actions?: ReactNode;
+  /** Browser tab title, when it should differ from the heading (e.g. "Home" for a greeting). */
+  docTitle?: string;
+}) {
   // Name the browser tab after the page, so several open tabs can be told apart
   useEffect(() => {
-    if (typeof title === "string" && title) document.title = `${title} · Digital Marketing`;
-  }, [title]);
+    const t = docTitle ?? (typeof title === "string" ? title : "");
+    if (t) document.title = `${t} · ${APP_TITLE}`;
+  }, [title, docTitle]);
   return (
     <>
       {crumbs && (
@@ -432,23 +497,74 @@ export function Steps({ steps, current, failed, vertical }: { steps: string[]; c
 }
 
 // ---------------- Dialogs ----------------
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+// Open dialogs, innermost last: only the top one reacts to Escape and traps Tab.
+const modalStack: string[] = [];
+
 export function Modal({ title, onClose, children, actions, wide }: { title: ReactNode; onClose: () => void; children: ReactNode; actions?: ReactNode; wide?: boolean }) {
   const id = useId();
+  const ref = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const opener = document.activeElement as HTMLElement | null;
+    modalStack.push(id);
+    const box = ref.current;
+    // Move focus inside, unless a field already took it (autoFocus)
+    if (box && !box.contains(document.activeElement)) {
+      const first = box.querySelector<HTMLElement>(`.modal-body :is(${FOCUSABLE})`) ?? box.querySelector<HTMLElement>(FOCUSABLE);
+      (first ?? box).focus();
+    }
+    const onKey = (e: KeyboardEvent) => {
+      const el = ref.current;
+      if (modalStack[modalStack.length - 1] !== id || !el) return;
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const items = Array.from(el.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((x) => x.getClientRects().length > 0);
+      if (!items.length) {
+        e.preventDefault();
+        el.focus();
+        return;
+      }
+      const firstEl = items[0];
+      const lastEl = items[items.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (!active || !el.contains(active)) {
+        e.preventDefault();
+        (e.shiftKey ? lastEl : firstEl).focus();
+      } else if (e.shiftKey && (active === firstEl || active === el)) {
+        e.preventDefault();
+        lastEl.focus();
+      } else if (!e.shiftKey && active === lastEl) {
+        e.preventDefault();
+        firstEl.focus();
+      }
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      const i = modalStack.lastIndexOf(id);
+      if (i >= 0) modalStack.splice(i, 1);
+      // Give focus back to whatever opened the dialog
+      if (opener && opener !== document.body && document.contains(opener)) opener.focus();
+    };
+  }, [id]);
+
   return (
     <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={id}>
-        <div className="spread" style={{ marginBottom: 12 }}>
+      <div ref={ref} tabIndex={-1} className={`modal ${wide ? "wide" : ""} ${actions ? "has-actions" : ""}`} role="dialog" aria-modal="true" aria-labelledby={id}>
+        <div className="spread modal-head" style={{ marginBottom: 12 }}>
           <h3 id={id}>{title}</h3>
-          <button className="btn btn-icon" aria-label="Close" onClick={onClose}>
+          <button type="button" className="btn btn-icon" aria-label="Close" onClick={onClose}>
             <Icon name="x" />
           </button>
         </div>
-        {children}
+        <div className="modal-body">{children}</div>
         {actions && <div className="actions">{actions}</div>}
       </div>
     </div>

@@ -81,16 +81,28 @@ export const getBrand = () => getSetting<BrandSettings>("brand", DEFAULT_BRAND);
 export const getRetention = () => getSetting<RetentionSettings>("retention", DEFAULT_RETENTION);
 export const getConsent = () => getSetting<ConsentSettings>("consent", DEFAULT_CONSENT);
 
-/** Page credentials: settings (encrypted) take precedence over .env. */
-export async function getMetaPage(): Promise<{ pageId: string; token: string; pageName?: string; source: "settings" | "env" | "none" }> {
+/**
+ * Page credentials: settings (encrypted) take precedence over .env. A Page ID saved in Settings always wins; if no token
+ * was saved with it, the .env token is used for that Page (the save was checked against Facebook with that token).
+ */
+export async function getMetaPage(): Promise<{
+  pageId: string;
+  token: string;
+  pageName?: string;
+  source: "settings" | "env" | "none";
+  tokenSource: "settings" | "env" | "none";
+}> {
   const s = await getSetting<MetaPageSettings | null>("meta.page", null);
   if (s?.pageId && s.tokenEnc) {
-    return { pageId: s.pageId, token: decrypt(s.tokenEnc) ?? "", pageName: s.pageName, source: "settings" };
+    return { pageId: s.pageId, token: decrypt(s.tokenEnc) ?? "", pageName: s.pageName, source: "settings", tokenSource: "settings" };
+  }
+  if (s?.pageId && env.META_PAGE_ACCESS_TOKEN) {
+    return { pageId: s.pageId, token: env.META_PAGE_ACCESS_TOKEN, pageName: s.pageName, source: "settings", tokenSource: "env" };
   }
   if (env.META_PAGE_ID && env.META_PAGE_ACCESS_TOKEN) {
-    return { pageId: env.META_PAGE_ID, token: env.META_PAGE_ACCESS_TOKEN, source: "env" };
+    return { pageId: env.META_PAGE_ID, token: env.META_PAGE_ACCESS_TOKEN, source: "env", tokenSource: "env" };
   }
-  return { pageId: "", token: "", source: "none" };
+  return { pageId: s?.pageId ?? "", token: "", pageName: s?.pageName, source: "none", tokenSource: "none" };
 }
 
 export async function saveMetaPage(pageId: string, token: string | null, pageName: string | undefined, userId: number) {

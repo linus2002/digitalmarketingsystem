@@ -4,7 +4,8 @@ import { z } from "zod";
 import { one, q } from "../lib/db.js";
 import { badRequest, intParam, notFound, parse } from "../lib/http.js";
 import { audit } from "../lib/audit.js";
-import { requirePerm } from "../middleware/auth.js";
+import { bumpTokenVersion, requirePerm, SESSION_COOKIE, sessionCookieOptions, signSession } from "../middleware/auth.js";
+import type { Role } from "../auth/permissions.js";
 import { ROLE_LABELS, ROLES } from "../auth/permissions.js";
 import { passwordRule } from "./auth.js";
 
@@ -45,6 +46,15 @@ usersRouter.patch("/:id", requirePerm("users.manage"), async (req, res) => {
        locked_until=CASE WHEN $5 IS NULL THEN locked_until END, updated_at=now() WHERE id=$1`,
     [id, b.name ?? null, b.role ?? null, b.is_active ?? null, b.password ? await bcrypt.hash(b.password, 12) : null],
   );
-  await audit(req, "user.updated", "user", id, { role: b.role, is_active: b.is_active, passwordReset: !!b.password });
+  // A password reset or turning the account off signs the person out everywhere.
+  if (b.password || b.is_active === false) {
+    const tv = await bumpTokenVersion(id);
+    if (id === req.user!.id) {
+      // An admin resetting their own password stays signed in here.
+      const name = b.name ?? req.user!.name;
+      res.cookie(SESSION_COOKIE, signSession({ ...req.user!, name, role: (b.role ?? req.user!.role) as Role }, tv), sessionCookieOptions());
+    }
+  }
+  await audit(req, "user.updated", "user", id, { role: b.role, is_active: b.is_active, passwordReset: !!b.password, nameChanged: b.name !== undefined });
   res.json({ ok: true });
 });

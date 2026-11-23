@@ -38,7 +38,8 @@ interface Overview {
 }
 
 export function AnalyticsPage() {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const toast = useToast();
   const [days, setDays] = useState<"7" | "28" | "90">("28");
   const { data, error, loading, reload } = useLoad(() => api<Overview>("/analytics/overview", { query: { days } }), [days]);
@@ -86,7 +87,9 @@ export function AnalyticsPage() {
       {data && !data.connected && (
         <div className="board">
           <Empty title="Connect your Facebook Page" action={can("settings.manage") ? <LinkButton to="/settings?tab=facebook" variant="primary" size="sm">Connect the Page</LinkButton> : undefined}>
-            Add your Page ID and Page access token in Settings. Analytics then sync every few hours.
+            {isAdmin
+              ? "Add your Page ID and Page access token in Settings. Analytics then sync every few hours."
+              : "No Facebook Page is connected yet. Ask your administrator to connect it; analytics then sync every few hours."}
           </Empty>
         </div>
       )}
@@ -101,7 +104,8 @@ export function AnalyticsPage() {
           {data.lastSync?.skippedMetrics?.length ? (
             <div style={{ marginBottom: 16 }}>
               <Alert tone="info" title={`${data.lastSync.skippedMetrics.length} metric${data.lastSync.skippedMetrics.length > 1 ? "s" : ""} not available from Facebook`}>
-                Meta renames and retires metrics between API versions; these were skipped: {data.lastSync.skippedMetrics.map((m) => m.metric).join(", ")}. Adjust META_PAGE_METRICS / META_POST_METRICS in .env if needed.
+                Meta renames and retires metrics between API versions; these were skipped: {data.lastSync.skippedMetrics.map((m) => m.metric).join(", ")}.{" "}
+                {isAdmin ? "Adjust META_PAGE_METRICS / META_POST_METRICS in .env if needed." : "Ask your administrator if a figure you need is missing."}
               </Alert>
             </div>
           ) : null}
@@ -147,7 +151,7 @@ export function AnalyticsPage() {
                       <tr key={p.fb_post_id}>
                         <td>
                           {p.post_id ? (
-                            <Link className="name" to={`/posts/${p.post_id}`}>
+                            <Link className="name" to={`/posts/${p.post_id}`} state={{ from: { to: "/analytics", label: "Analytics" } }}>
                               {p.post_title}
                             </Link>
                           ) : (

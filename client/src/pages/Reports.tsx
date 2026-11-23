@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
-import { CAMPAIGN_STATUS, fmtCompact, fmtNum, SOURCE_LABEL } from "../lib/format";
+import { bizToday, BUSINESS_TZ_LABEL, CAMPAIGN_STATUS, fmtCompact, fmtNum, SOURCE_LABEL } from "../lib/format";
 import { BarChart } from "../components/Chart";
 import { Empty, KpiCard, LoadError, PageHead, Skeleton, StatusTag, TextField } from "../components/ui";
 import { Icon } from "../components/Icons";
@@ -16,12 +16,25 @@ interface Summary {
   leads: { source: string; n: number; reviewed: number }[];
 }
 
-const iso = (d: Date) => d.toISOString().slice(0, 10);
+/** A Philippine calendar day n days from today. */
+const phDay = (n: number) => {
+  const d = new Date(`${bizToday()}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+const isDay = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v);
 
 export function ReportsPage() {
-  const [from, setFrom] = useState(iso(new Date(Date.now() - 30 * 86400_000)));
-  const [to, setTo] = useState(iso(new Date(Date.now() + 86400_000)));
-  const { data, error, loading, reload } = useLoad(() => api<Summary>("/reports/summary", { query: { from, to } }), [from, to]);
+  const [from, setFrom] = useState(() => phDay(-30));
+  const [to, setTo] = useState(() => bizToday());
+  const rangeErr = isDay(from) && isDay(to) && from > to ? "The start date can't be after the end date." : null;
+  // Empty or invalid fields fall back to the server's defaults (last 30 days, up to today).
+  const query = { from: isDay(from) ? from : undefined, to: isDay(to) ? to : undefined };
+  const { data, error, loading, reload } = useLoad(
+    () => (rangeErr ? Promise.resolve(null) : api<Summary>("/reports/summary", { query })),
+    [query.from, query.to, rangeErr],
+  );
+  const csvQs = new URLSearchParams(Object.entries(query).filter((e): e is [string, string] => !!e[1])).toString();
 
   const total = (data?.attempts.ok ?? 0) + (data?.attempts.errors ?? 0);
   const successRate = total ? (data!.attempts.ok / total) * 100 : 100;
@@ -29,21 +42,28 @@ export function ReportsPage() {
   return (
     <>
       <PageHead
-        title="Campaign performance"
-        sub="Published posts, reach and engagement by campaign, plus how reliably scheduled posts went out."
+        title="Reports"
+        sub={`Published posts, reach and engagement by campaign, plus how reliably scheduled posts went out. Dates are ${BUSINESS_TZ_LABEL}; both days are included.`}
         actions={
           <>
-            <TextField label="From" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-            <TextField label="To" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-            <a className="btn btn-soft" style={{ alignSelf: "flex-end" }} href={`/api/reports/campaigns.csv?from=${from}&to=${to}`}>
-              <Icon name="download" />
-              Export to Excel (CSV)
-            </a>
+            <TextField label="From" type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} error={rangeErr} />
+            <TextField label="To (included)" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
+            {rangeErr ? (
+              <span className="btn btn-soft" style={{ alignSelf: "flex-end", opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
+                <Icon name="download" />
+                Export to Excel (CSV)
+              </span>
+            ) : (
+              <a className="btn btn-soft" style={{ alignSelf: "flex-end" }} href={`/api/reports/campaigns.csv${csvQs ? `?${csvQs}` : ""}`}>
+                <Icon name="download" />
+                Export to Excel (CSV)
+              </a>
+            )}
           </>
         }
       />
-      {error && <LoadError error={error} retry={reload} />}
-      {loading && !data && <Skeleton rows={4} />}
+      {error && !rangeErr && <LoadError error={error} retry={reload} />}
+      {loading && !data && !rangeErr && <Skeleton rows={4} />}
       {data && (
         <>
           <div className="grid g4">

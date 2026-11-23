@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { ago, CONTACT_LABEL, fmtDate, fromLocalInput, LEAD_STATUS, SOURCE_LABEL, toLocalInput } from "../lib/format";
+import { ago, BUSINESS_TZ_LABEL, CONTACT_LABEL, fmtBiz, fmtDate, fromBizInput, LEAD_STATUS, SOURCE_LABEL, toBizInput } from "../lib/format";
 import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icons";
 import { Alert, Button, ConfirmModal, LoadError, Modal, PageHead, SelectField, Skeleton, StatusTag, Tag, TextArea, TextField } from "../components/ui";
+import "../styles/inquiries.css";
 
 interface Lead {
   id: number;
@@ -23,12 +24,15 @@ interface Lead {
   name: string | null;
   email: string | null;
   phone: string | null;
+  revealed: boolean;
   assigned_to: number | null;
   assigned_name: string | null;
+  assigned_active: boolean | null;
   follow_up_at: string | null;
   consent_given: boolean;
   consent_at: string | null;
   consent_version: string | null;
+  opted_out_at: string | null;
   anonymized_at: string | null;
   created_at: string;
   inquiry: string | null;
@@ -40,6 +44,7 @@ interface Msg {
   sender_name: string | null;
   reviewer_name: string | null;
   body: string | null;
+  masked?: boolean;
   status: string;
   error: string | null;
   created_at: string;
@@ -49,6 +54,9 @@ interface Detail {
   messages: Msg[];
   activities: { id: number; type: string; note: string | null; user_name: string | null; created_at: string }[];
   consents: { action: string; consent_version: string | null; channel: string; created_at: string }[];
+  truncated?: { messages: boolean; activities: boolean };
+  canReveal?: boolean;
+  statusOptions?: string[];
   replyWindow: { ok: boolean; reason?: string; messagingType?: string; tag?: string } | null;
   aiSuggestions: boolean;
 }
@@ -60,24 +68,62 @@ interface Template {
   body: string;
   status: string;
 }
+/** The parts of GET /api/status this page uses. It may be unavailable: everything here works without it. */
+interface AppStatus {
+  businessName?: string;
+  messengerTestMode?: boolean;
+}
+
+// Same labels as the server's CATEGORY_LABELS (server/src/services/guardrails.ts); the server's list wins when loaded.
+const CATEGORY_FALLBACK = [
+  { value: "product_availability", label: "Availability" },
+  { value: "pricing_quote", label: "Price or quote" },
+  { value: "prescription", label: "Prescription" },
+  { value: "medical_question", label: "Medical question" },
+  { value: "regulatory_import", label: "Regulatory / import" },
+  { value: "shipping_logistics", label: "Shipping" },
+  { value: "order_status", label: "Order status" },
+  { value: "privacy_request", label: "Privacy request" },
+  { value: "general", label: "General" },
+];
+
+const ANON_REASONS = [
+  { value: "erasure_request", label: "Person asked for their details to be deleted" },
+  { value: "consent_withdrawn", label: "Person withdrew consent" },
+  { value: "entered_by_mistake", label: "Entered by mistake or a duplicate" },
+  { value: "other", label: "Other reason" },
+];
 
 const MSG_STATUS: Record<string, string> = {
   pending_review: "Waiting for pharmaceutical approval",
+  sending: "Sending…",
   blocked: "Not sent",
   failed: "Failed to send",
   rejected: "Not approved",
   logged: "Logged (sent outside this system)",
 };
 
+const STAFF_ROLES = ["pharma_team", "lead_agent", "admin"];
+
 export function LeadDetailPage() {
   const { id } = useParams();
   const nav = useNavigate();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const toast = useToast();
   const [reveal, setReveal] = useState(false);
   const { data, error, loading, reload } = useLoad(() => api<Detail>(`/leads/${id}`, { query: { reveal: reveal ? 1 : undefined } }), [id, reveal]);
-  const templates = useLoad(() => api<{ templates: Template[] }>("/templates"), []);
+  const templates = useLoad(() => api<{ templates: Template[]; categories?: { value: string; label: string }[] }>("/templates"), []);
   const users = useLoad(() => api<{ users: { id: number; name: string; role: string }[] }>("/users/directory"), []);
+  const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api<AppStatus>("/status")
+      .then((s) => alive && setAppStatus(s))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const [reply, setReply] = useState("");
   const [templateId, setTemplateId] = useState<number | null>(null);
@@ -87,7 +133,8 @@ export function LeadDetailPage() {
   const [editing, setEditing] = useState<{ id: number; body: string } | null>(null);
   const [rejecting, setRejecting] = useState<{ id: number; reason: string } | null>(null);
   const [anonymise, setAnonymise] = useState(false);
-  const [anonReason, setAnonReason] = useState("Person asked for their details to be deleted");
+  const [anonReason, setAnonReason] = useState("erasure_request");
+  const [confirmStatus, setConfirmStatus] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -95,35 +142,52 @@ export function LeadDetailPage() {
   }, [data?.messages.length]);
 
   if (loading && !data) return <Skeleton rows={5} />;
-  if (error) return <LoadError error={error} retry={reload} />;
+  if (error && !data) return <LoadError error={error} retry={reload} />;
   if (!data) return null;
   const { lead, messages, activities, consents, replyWindow } = data;
-  const vars: Record<string, string> = {
+  const canReveal = data.canReveal ?? true;
+  const optedOut = lead.status === "opted_out" || !!lead.opted_out_at;
+  // Placeholders we can't fill here stay as {{…}}: the server fills them when the reply is sent.
+  const vars: Record<string, string | undefined> = {
     ref: lead.ref,
     medicine: lead.medicine_name ?? "the medicine",
     country: lead.destination_country ?? "your country",
-    name: lead.name?.split(" ")[0] ?? "",
-    business: "GetMeds",
+    name: lead.revealed && lead.name ? lead.name.split(" ")[0] : undefined,
+    business: appStatus?.businessName || undefined,
   };
-  const fill = (body: string) => body.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k: string) => vars[k] ?? "");
+  const fill = (body: string) => body.replace(/\{\{\s*(\w+)\s*\}\}/g, (m, k: string) => vars[k] ?? m);
   const agentTemplates = (templates.data?.templates ?? []).filter((t) => !t.key && t.status === "approved");
+  const categories = templates.data?.categories?.length ? templates.data.categories : CATEGORY_FALLBACK;
   const reviewer = can("leads.review");
-  const closed = !!lead.anonymized_at || lead.status === "opted_out";
+  const closed = !!lead.anonymized_at || optedOut;
+  const statusOptions = data.statusOptions ?? [lead.status];
 
-  async function act(label: string, fn: () => Promise<unknown>, ok?: string) {
+  // Owner choices: people who can see every inquiry may pick anyone on the inquiry team; agents only themselves.
+  const directory = (users.data?.users ?? []).filter((u) => STAFF_ROLES.includes(u.role));
+  const ownerOptions: { value: string | number; label: string }[] = [{ value: "", label: "Unassigned" }];
+  if (can("leads.view_all")) ownerOptions.push(...directory.map((u) => ({ value: u.id, label: u.name })));
+  else if (user) ownerOptions.push({ value: user.id, label: `Me (${user.name})` });
+  if (lead.assigned_to && !ownerOptions.some((o) => o.value === lead.assigned_to))
+    ownerOptions.push({ value: lead.assigned_to, label: `${lead.assigned_name ?? "Unknown person"}${lead.assigned_active === false ? " (inactive)" : ""}` });
+
+  /** Runs an action; returns true only if it worked, so dialogs close and pages change only on success. */
+  async function act(label: string, fn: () => Promise<unknown>, ok?: string): Promise<boolean> {
     setBusy(label);
     try {
       await fn();
       if (ok) toast.ok(ok);
       await reload();
+      return true;
     } catch (e) {
       toast.err("That didn't work", (e as Error).message);
+      await reload();
+      return false;
     } finally {
       setBusy(null);
     }
   }
 
-  const update = (body: Record<string, unknown>, ok = "Saved") => act("update", () => api(`/leads/${lead.id}`, { method: "PATCH", body }), ok);
+  const update = (body: Record<string, unknown>, ok = "Saved", label = "update") => act(label, () => api(`/leads/${lead.id}`, { method: "PATCH", body }), ok);
 
   async function send() {
     setBusy("send");
@@ -145,7 +209,7 @@ export function LeadDetailPage() {
     setBusy("suggest");
     try {
       const r = await api<{ suggestion: { templateId: number | null; reply: string; needsPharmacist: boolean; reason: string } }>(`/leads/${lead.id}/suggest`, { body: {} });
-      setReply(r.suggestion.reply);
+      setReply(fill(r.suggestion.reply));
       setTemplateId(r.suggestion.templateId);
       setSuggestNote(`${r.suggestion.reason}${r.suggestion.needsPharmacist ? " · Needs pharmaceutical review before sending." : ""}`);
     } catch (e) {
@@ -153,6 +217,12 @@ export function LeadDetailPage() {
     } finally {
       setBusy(null);
     }
+  }
+
+  function changeStatus(next: string) {
+    if (next === lead.status) return;
+    if (next === "closed" || next === "opted_out") setConfirmStatus(next);
+    else void update({ status: next }, lead.status === "closed" ? "Inquiry reopened" : "Status updated", "status");
   }
 
   return (
@@ -188,9 +258,21 @@ export function LeadDetailPage() {
         }
       />
 
+      {error && (
+        <div style={{ marginBottom: 16 }}>
+          <LoadError error={error} retry={reload} />
+        </div>
+      )}
       {lead.anonymized_at && (
         <div style={{ marginBottom: 16 }}>
           <Alert tone="info" title={`Personal data removed ${fmtDate(lead.anonymized_at)}`}>Only anonymous details remain for reporting.</Alert>
+        </div>
+      )}
+      {optedOut && !lead.anonymized_at && (
+        <div style={{ marginBottom: 16 }}>
+          <Alert tone="bad" title="This person opted out">
+            No messages can be sent to them. Only they can restart the conversation, by messaging the Page again.
+          </Alert>
         </div>
       )}
       {lead.needs_review && (
@@ -211,6 +293,7 @@ export function LeadDetailPage() {
               <h2 className="section">Conversation</h2>
               {lead.inquiry && <Tag tone="mute">Form message included</Tag>}
             </div>
+            {data.truncated?.messages && <p className="note mt0">Showing the latest 300 messages. Export the data to see the full conversation.</p>}
             {lead.inquiry && (
               <div className="bubble-msg in" style={{ marginBottom: 10 }}>
                 {lead.inquiry}
@@ -224,19 +307,26 @@ export function LeadDetailPage() {
                   {m.body ?? <i className="muted">Message removed</i>}
                   <span className="m">
                     {m.direction === "in" ? "Customer" : m.sender_type === "bot" ? "Assistant (approved template)" : m.sender_name ?? "Team"} · {fmtDate(m.created_at, true)}
+                    {m.masked ? " · contact details hidden" : ""}
                     {MSG_STATUS[m.status] ? ` · ${MSG_STATUS[m.status]}` : ""}
                     {m.error ? `: ${m.error}` : ""}
                     {m.reviewer_name ? ` · reviewed by ${m.reviewer_name}` : ""}
                   </span>
-                  {m.status === "pending_review" && reviewer && (
+                  {m.status === "pending_review" && reviewer && !optedOut && (
                     <div className="row mt8" style={{ gap: 6 }}>
-                      <Button size="sm" variant="primary" loading={busy === `ap${m.id}`} onClick={() => act(`ap${m.id}`, () => api(`/leads/${lead.id}/messages/${m.id}/approve`, { body: {} }), "Approved and sent")}>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        loading={busy === `ap${m.id}`}
+                        disabled={!!busy}
+                        onClick={() => void act(`ap${m.id}`, () => api(`/leads/${lead.id}/messages/${m.id}/approve`, { body: {} }), "Approved and sent")}
+                      >
                         Approve and send
                       </Button>
-                      <Button size="sm" onClick={() => setEditing({ id: m.id, body: m.body ?? "" })}>
+                      <Button size="sm" disabled={!!busy} onClick={() => setEditing({ id: m.id, body: m.body ?? "" })}>
                         Edit first
                       </Button>
-                      <Button size="sm" variant="quiet" onClick={() => setRejecting({ id: m.id, reason: "" })}>
+                      <Button size="sm" variant="quiet" disabled={!!busy} onClick={() => setRejecting({ id: m.id, reason: "" })}>
                         Don't send
                       </Button>
                     </div>
@@ -248,6 +338,13 @@ export function LeadDetailPage() {
             {can("leads.reply") && !closed && (
               <div className="mt24">
                 <hr className="split" />
+                {lead.source === "messenger" && appStatus?.messengerTestMode && (
+                  <div style={{ marginBottom: 12 }}>
+                    <Alert tone="info" title="Test mode">
+                      Test mode: Messenger replies aren't really sent. They're recorded here as if they were.
+                    </Alert>
+                  </div>
+                )}
                 {lead.source === "messenger" && replyWindow && !replyWindow.ok && (
                   <div style={{ marginBottom: 12 }}>
                     <Alert tone="warn" title="Messenger won't allow a reply now">
@@ -281,16 +378,23 @@ export function LeadDetailPage() {
                     />
                   </div>
                   {data.aiSuggestions && (
-                    <Button icon="spark" variant="soft" loading={busy === "suggest"} onClick={suggest}>
+                    <Button icon="spark" variant="soft" loading={busy === "suggest"} disabled={!!busy && busy !== "suggest"} onClick={suggest}>
                       Suggest a reply
                     </Button>
                   )}
                 </div>
                 <div className="mt16">
-                  <TextArea label={lead.source === "messenger" ? "Reply" : "What you sent"} value={reply} onChange={(e) => setReply(e.target.value)} rows={4} maxLength={2000} hint={suggestNote ?? undefined} />
+                  <TextArea
+                    label={lead.source === "messenger" ? "Reply" : "What you sent"}
+                    value={reply}
+                    onChange={(e) => setReply(e.target.value)}
+                    rows={4}
+                    maxLength={2000}
+                    hint={suggestNote ?? (/\{\{\s*\w+\s*\}\}/.test(reply) ? "Placeholders like {{name}} are filled in when the reply is sent." : undefined)}
+                  />
                 </div>
                 <div className="row mt16" style={{ justifyContent: "flex-end" }}>
-                  <Button variant="primary" icon="send" loading={busy === "send"} disabled={!reply.trim() || (lead.source === "messenger" && !replyWindow?.ok)} onClick={send}>
+                  <Button variant="primary" icon="send" loading={busy === "send"} disabled={!reply.trim() || (!!busy && busy !== "send") || (lead.source === "messenger" && !replyWindow?.ok)} onClick={send}>
                     {lead.needs_review && !reviewer ? "Send for approval" : lead.source === "messenger" ? "Send on Messenger" : "Log reply"}
                   </Button>
                 </div>
@@ -305,11 +409,19 @@ export function LeadDetailPage() {
                 <div className="grow">
                   <TextField label="Add a note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Called the supplier, waiting for stock confirmation" />
                 </div>
-                <Button size="sm" disabled={!note.trim()} loading={busy === "note"} onClick={() => act("note", () => api(`/leads/${lead.id}/notes`, { body: { note } }).then(() => setNote("")), "Note added")}>
+                <Button
+                  size="sm"
+                  disabled={!note.trim() || (!!busy && busy !== "note")}
+                  loading={busy === "note"}
+                  onClick={async () => {
+                    if (await act("note", () => api(`/leads/${lead.id}/notes`, { body: { note } }), "Note added")) setNote("");
+                  }}
+                >
                   Add
                 </Button>
               </div>
             )}
+            {data.truncated?.activities && <p className="note">Showing the latest 300 entries.</p>}
             <ol className="timeline">
               {activities.map((a) => (
                 <li key={a.id}>
@@ -317,7 +429,7 @@ export function LeadDetailPage() {
                     <Icon name={a.type === "note" ? "edit" : a.type === "assign" ? "users" : a.type === "review" ? "shield" : a.type === "consent" ? "check" : "clock"} />
                   </span>
                   <div>
-                    <b>{a.note ?? (a.type === "note" ? "Note removed" : a.type)}</b>
+                    <b>{a.note ?? (lead.anonymized_at ? "Details removed" : a.type === "note" ? "Note removed" : a.type)}</b>
                     <div className="meta">{a.user_name ?? "System"}</div>
                   </div>
                   <time>{ago(a.created_at)}</time>
@@ -331,8 +443,8 @@ export function LeadDetailPage() {
           <div className="board">
             <div className="spread">
               <p className="label mb0">Contact</p>
-              {!lead.anonymized_at && (
-                <Button size="sm" variant="quiet" icon="eye" onClick={() => setReveal((r) => !r)}>
+              {!lead.anonymized_at && canReveal && (
+                <Button size="sm" variant="quiet" icon="eye" loading={loading && reveal !== lead.revealed} onClick={() => setReveal((r) => !r)}>
                   {reveal ? "Hide" : "Show"}
                 </Button>
               )}
@@ -350,55 +462,58 @@ export function LeadDetailPage() {
               <dd>{lead.destination_country ?? "—"}</dd>
             </dl>
             {reveal && <p className="note">Viewing contact details is recorded in the audit log.</p>}
+            {!canReveal && !lead.anonymized_at && <p className="note">Contact details are shown to the inquiry's owner. Assign it to yourself to see them.</p>}
           </div>
 
           {can("leads.manage") && !lead.anonymized_at && (
             <div className="board stackv">
               <p className="label mb0">Handling</p>
-              <SelectField label="Status" value={lead.status} onChange={(e) => update({ status: e.target.value }, "Status updated")} options={Object.entries(LEAD_STATUS).filter(([k]) => !["awaiting_consent", "collecting"].includes(k) || k === lead.status).map(([value, s]) => ({ value, label: s.label }))} />
+              <SelectField
+                label="Status"
+                value={lead.status}
+                disabled={!!busy || statusOptions.length < 2}
+                hint={optedOut ? "Opted out can't be changed by staff." : undefined}
+                onChange={(e) => changeStatus(e.target.value)}
+                options={statusOptions.map((value) => ({ value, label: LEAD_STATUS[value]?.label ?? value }))}
+              />
               <SelectField
                 label="Owner"
                 value={lead.assigned_to ?? ""}
-                onChange={(e) => update({ assigned_to: e.target.value ? Number(e.target.value) : null }, "Owner updated")}
-                options={[
-                  { value: "", label: "Unassigned" },
-                  ...(users.data?.users ?? []).filter((u) => ["pharma_team", "lead_agent", "admin"].includes(u.role)).map((u) => ({ value: u.id, label: u.name })),
-                ]}
+                disabled={!!busy}
+                onChange={(e) => void update({ assigned_to: e.target.value ? Number(e.target.value) : null }, "Owner updated", "owner")}
+                options={ownerOptions}
+                hint={!can("leads.view_all") ? "You can take an inquiry yourself or hand it back." : undefined}
               />
               <SelectField
                 label="Category"
                 value={lead.category}
-                onChange={(e) => update({ category: e.target.value }, "Category updated")}
-                options={[
-                  ["product_availability", "Availability"],
-                  ["pricing_quote", "Price or quote"],
-                  ["prescription", "Prescription"],
-                  ["medical_question", "Medical question"],
-                  ["regulatory_import", "Regulatory / import"],
-                  ["shipping_logistics", "Shipping"],
-                  ["order_status", "Order status"],
-                  ["privacy_request", "Privacy request"],
-                  ["general", "General"],
-                ].map(([value, label]) => ({ value, label }))}
+                disabled={!!busy}
+                onChange={(e) => void update({ category: e.target.value }, "Category updated", "category")}
+                options={[...categories, ...(categories.some((c) => c.value === lead.category) ? [] : [{ value: lead.category, label: lead.categoryLabel }])]}
               />
-              <SelectField label="Priority" value={lead.priority} onChange={(e) => update({ priority: e.target.value }, "Priority updated")} options={["low", "normal", "high", "urgent"].map((p) => ({ value: p, label: p[0].toUpperCase() + p.slice(1) }))} />
-              <TextField
-                label="Follow up"
-                type="datetime-local"
-                defaultValue={toLocalInput(lead.follow_up_at)}
-                key={lead.follow_up_at ?? "none"}
-                onBlur={(e) => {
-                  const v = fromLocalInput(e.target.value);
-                  if (v !== (lead.follow_up_at ? new Date(lead.follow_up_at).toISOString() : null)) void update({ follow_up_at: v }, "Follow-up set");
-                }}
+              <SelectField
+                label="Priority"
+                value={lead.priority}
+                disabled={!!busy}
+                onChange={(e) => void update({ priority: e.target.value }, "Priority updated", "priority")}
+                options={["low", "normal", "high", "urgent"].map((p) => ({ value: p, label: p[0].toUpperCase() + p.slice(1) }))}
               />
+              {!optedOut && (
+                <FollowUpEditor
+                  key={lead.follow_up_at ?? "none"}
+                  value={lead.follow_up_at}
+                  busy={busy === "followup"}
+                  disabled={!!busy && busy !== "followup"}
+                  onSave={(v) => update({ follow_up_at: v }, v ? "Follow-up set" : "Follow-up removed", "followup")}
+                />
+              )}
               {lead.needs_review && reviewer && (
-                <Button variant="primary" icon="check" onClick={() => update({ needs_review: false }, "Review marked done")}>
+                <Button variant="primary" icon="check" loading={busy === "review"} disabled={!!busy && busy !== "review"} onClick={() => void update({ needs_review: false }, "Review marked done", "review")}>
                   Mark review done
                 </Button>
               )}
-              {!lead.needs_review && (
-                <Button variant="quiet" icon="shield" onClick={() => update({ needs_review: true }, "Sent to the pharmaceutical team")}>
+              {!lead.needs_review && !optedOut && (
+                <Button variant="quiet" icon="shield" loading={busy === "review"} disabled={!!busy && busy !== "review"} onClick={() => void update({ needs_review: true }, "Sent to the pharmaceutical team", "review")}>
                   Ask the pharmaceutical team
                 </Button>
               )}
@@ -431,19 +546,42 @@ export function LeadDetailPage() {
         </aside>
       </div>
 
+      {confirmStatus && (
+        <ConfirmModal
+          title={confirmStatus === "opted_out" ? `Mark ${lead.ref} as opted out?` : `Close ${lead.ref}?`}
+          warning={
+            confirmStatus === "opted_out"
+              ? "No more messages can be sent to this person, and staff can't undo it. Only they can restart, by messaging again."
+              : "It leaves the open lists. You can reopen it later if they get back in touch."
+          }
+          confirmLabel={confirmStatus === "opted_out" ? "Mark as opted out" : "Close inquiry"}
+          busy={busy === "status"}
+          onClose={() => setConfirmStatus(null)}
+          onConfirm={async () => {
+            const ok = await update({ status: confirmStatus }, confirmStatus === "opted_out" ? "Marked as opted out" : "Inquiry closed", "status");
+            if (ok) setConfirmStatus(null);
+          }}
+        >
+          {confirmStatus === "opted_out" && <p className="small muted" style={{ margin: "0 0 8px" }}>Use this when the person asked us, by phone or in writing, to stop contacting them. It's recorded in their consent history.</p>}
+        </ConfirmModal>
+      )}
       {editing && (
         <Modal
           title="Edit, then approve and send"
-          onClose={() => setEditing(null)}
+          onClose={() => busy !== "edit" && setEditing(null)}
           actions={
             <>
-              <Button variant="quiet" onClick={() => setEditing(null)}>
+              <Button variant="quiet" disabled={busy === "edit"} onClick={() => setEditing(null)}>
                 Cancel
               </Button>
               <Button
                 variant="primary"
                 loading={busy === "edit"}
-                onClick={() => act("edit", () => api(`/leads/${lead.id}/messages/${editing.id}/approve`, { body: { body: editing.body } }), "Approved and sent").then(() => setEditing(null))}
+                disabled={!editing.body.trim()}
+                onClick={async () => {
+                  const ok = await act("edit", () => api(`/leads/${lead.id}/messages/${editing.id}/approve`, { body: { body: editing.body } }), "Approved and sent");
+                  if (ok) setEditing(null); // on failure the dialog stays open with the edited text
+                }}
               >
                 Approve and send
               </Button>
@@ -456,17 +594,20 @@ export function LeadDetailPage() {
       {rejecting && (
         <Modal
           title="Don't send this reply"
-          onClose={() => setRejecting(null)}
+          onClose={() => busy !== "reject" && setRejecting(null)}
           actions={
             <>
-              <Button variant="quiet" onClick={() => setRejecting(null)}>
+              <Button variant="quiet" disabled={busy === "reject"} onClick={() => setRejecting(null)}>
                 Cancel
               </Button>
               <Button
                 variant="primary"
                 disabled={rejecting.reason.trim().length < 2}
                 loading={busy === "reject"}
-                onClick={() => act("reject", () => api(`/leads/${lead.id}/messages/${rejecting.id}/reject`, { body: { reason: rejecting.reason } }), "Reply returned").then(() => setRejecting(null))}
+                onClick={async () => {
+                  const ok = await act("reject", () => api(`/leads/${lead.id}/messages/${rejecting.id}/reject`, { body: { reason: rejecting.reason } }), "Reply returned");
+                  if (ok) setRejecting(null);
+                }}
               >
                 Return to the author
               </Button>
@@ -482,18 +623,60 @@ export function LeadDetailPage() {
           confirmWord="delete"
           confirmLabel="Delete personal data"
           busy={busy === "anon"}
-          onClose={() => setAnonymise(false)}
-          onConfirm={() =>
-            act("anon", () => api(`/leads/${lead.id}/anonymize`, { body: { reason: anonReason } }), "Personal data deleted").then(() => {
+          onClose={() => busy !== "anon" && setAnonymise(false)}
+          onConfirm={async () => {
+            const ok = await act("anon", () => api(`/leads/${lead.id}/anonymize`, { body: { reason: anonReason } }), "Personal data deleted");
+            if (ok) {
               setAnonymise(false);
               nav("/leads");
-            })
-          }
+            }
+          }}
         >
-          <p style={{ margin: "0 0 8px", fontSize: 13, color: "var(--ink-3)" }}>Removed: name, email, phone, Messenger ID, medicine name, every message and note. Kept: category, country, dates and the consent history, with no personal details.</p>
-          <TextField label="Reason" value={anonReason} onChange={(e) => setAnonReason(e.target.value)} />
+          <p style={{ margin: "0 0 8px", fontSize: 13, color: "var(--ink-3)" }}>
+            Removed: name, email, phone, Messenger ID, medicine name, every message, note and activity detail. Kept: category, country, dates and the consent history, with no personal details.
+          </p>
+          <SelectField label="Reason" value={anonReason} onChange={(e) => setAnonReason(e.target.value)} options={ANON_REASONS} />
         </ConfirmModal>
       )}
     </>
+  );
+}
+
+/** Follow-up date in Philippine time, saved with an explicit button (no save-on-blur). */
+function FollowUpEditor({ value, busy, disabled, onSave }: { value: string | null; busy: boolean; disabled: boolean; onSave: (v: string | null) => Promise<boolean> }) {
+  const current = toBizInput(value); // minute precision, Philippine time
+  const [input, setInput] = useState(current);
+  const parsed = fromBizInput(input);
+  const invalid = !!input && !parsed;
+  const changed = input !== current;
+  return (
+    <div className="stackv" style={{ gap: 6 }}>
+      <div className="inq-followup">
+        <TextField
+          label={`Follow up (${BUSINESS_TZ_LABEL})`}
+          type="datetime-local"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          error={invalid ? "Enter a full date and time" : undefined}
+        />
+        <Button size="sm" variant="primary" loading={busy} disabled={disabled || !changed || !parsed} onClick={() => void onSave(parsed)}>
+          Save
+        </Button>
+        {value && (
+          <Button size="sm" variant="quiet" disabled={disabled || busy} onClick={() => void onSave(null)}>
+            Clear
+          </Button>
+        )}
+      </div>
+      {value && !changed && <span className="small muted">{fmtBiz(value)} ({BUSINESS_TZ_LABEL})</span>}
+      {changed && input && parsed && (
+        <span className="small muted">
+          Not saved yet.{" "}
+          <button type="button" className="linklike" style={{ background: "none", border: 0, padding: 0, color: "var(--deep)", cursor: "pointer" }} onClick={() => setInput(current)}>
+            Undo
+          </button>
+        </span>
+      )}
+    </div>
   );
 }

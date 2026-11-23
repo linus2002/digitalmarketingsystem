@@ -91,8 +91,30 @@ export function checkContent(text: string, bannedPhrases: string[]): string[] {
   return issues;
 }
 
-export const OPT_OUT = /^\s*(stop|unsubscribe|opt[ -]?out|stop messaging|don'?t message me)\s*[.!]*\s*$/i;
+// Opt-out: a short whole-message keyword ("STOP", "unsubscribe", "please stop"), or a clear phrase anywhere in the
+// message ("please stop messaging me", "unsubscribe me"). Phrases need an object ("me"/"us") or a messaging verb,
+// so ordinary sentences like "I want to stop smoking" or "should I stop taking it" don't count.
+export const OPT_OUT =
+  /^\s*(please\s+)?(stop|unsubscribe|opt[ -]?out|stop messaging( me)?|don'?t message me)(\s+please)?\s*[.!]*\s*$|\b(stop (messaging|texting|contacting|sending (me )?messages( to me)?|emailing|calling) (me|us)\b|unsubscribe me\b|opt me out\b|(do not|don'?t) (message|contact|text|email) (me|us)( again| anymore| any more)?\b|no more messages\b|remove me from (your|this|the) (list|messages|mailing list)\b)/i;
 export const DELETE_REQUEST = /^\s*(delete|delete my (data|details|info))\s*[.!]*\s*$/i;
 export const HUMAN_REQUEST = /\b(human|real person|agent|talk to (someone|a person)|pharmacist)\b/i;
 export const YES = /^\s*(yes|y|yeah|yep|ok|okay|i agree|agree|sure|oo|opo)\b/i;
 export const NO = /^\s*(no|n|nope|no thanks|don'?t|hindi)\b/i;
+
+const EMAIL_IN_TEXT = /[^\s@<>()]+@[^\s@<>()]+\.[a-z]{2,}/gi;
+// 7+ digits, optionally with a leading + and separators: phone numbers, not doses ("100 mg") or years.
+const PHONE_IN_TEXT = /\+?\d[\d\s().-]{5,}\d/g;
+const digitCount = (v: string) => v.replace(/\D/g, "").length;
+
+/** True when the text contains something that looks like an email address or phone number. */
+export function hasContactData(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return (text.match(EMAIL_IN_TEXT)?.length ?? 0) > 0 || (text.match(PHONE_IN_TEXT) ?? []).some((m) => digitCount(m) >= 7);
+}
+
+/** Replaces email addresses and phone numbers in free text (for masking, and before text goes to the AI). */
+export function redactContactData(text: string, replacer: { email?: (v: string) => string; phone?: (v: string) => string } = {}): string {
+  return text
+    .replace(EMAIL_IN_TEXT, (m) => (replacer.email ? replacer.email(m) : "[email removed]"))
+    .replace(PHONE_IN_TEXT, (m) => (digitCount(m) >= 7 ? (replacer.phone ? replacer.phone(m) : "[phone removed]") : m));
+}

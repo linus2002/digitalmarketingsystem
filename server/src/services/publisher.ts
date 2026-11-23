@@ -7,8 +7,20 @@ import { MetaError, publishToPage } from "./meta.js";
 export const backoffMinutes = (attempt: number) => Math.min(60, 2 ** Math.max(0, attempt - 1));
 
 export function composeMessage(post: { message: string; hashtags: string[] }): string {
-  const tags = (post.hashtags ?? []).map((h) => (h.startsWith("#") ? h : `#${h}`)).filter((h) => !post.message.includes(h));
-  return tags.length ? `${post.message.trim()}\n\n${tags.join(" ")}` : post.message.trim();
+  const message = (post.message ?? "").trim();
+  // Whole-tag match: "#GetMeds" is not already present just because the message contains "#GetMedsPH".
+  const present = new Set((message.match(/#[\p{L}\p{N}_]+/gu) ?? []).map((t) => t.toLowerCase()));
+  const tags: string[] = [];
+  for (const raw of post.hashtags ?? []) {
+    const h = raw.trim();
+    if (!h) continue;
+    const tag = h.startsWith("#") ? h : `#${h}`;
+    const key = tag.toLowerCase();
+    if (present.has(key)) continue;
+    present.add(key);
+    tags.push(tag);
+  }
+  return tags.length ? `${message}\n\n${tags.join(" ")}` : message;
 }
 
 async function logAttempt(postId: number, attempt: number, status: string, message: string, response?: unknown) {
@@ -23,38 +35,56 @@ async function logAttempt(postId: number, attempt: number, status: string, messa
 
 export async function publishOne(post: Row) {
   const attempt = (post.attempts as number) + 1;
+
+  // 1. Talk to Facebook. Only this step's errors decide retry vs failure.
+  let fbId: string;
+  let raw: unknown;
   try {
-    let fbId: string;
-    let raw: unknown;
     if (env.PUBLISH_DRY_RUN) {
       fbId = `dryrun_${post.id}_${Date.now()}`;
       raw = { dryRun: true };
     } else {
-      ({ id: fbId, raw } = await publishToPage({ message: composeMessage(post as { message: string; hashtags: string[] }), link: post.link_url, imageUrl: post.image_url }));
+      ({ id: fbId, raw } = await publishToPage({ message: composeMessage(post as { message: string; hashtags: string[] }), link: post.link_url, imageUrl: post.image_url, videoUrl: post.video_url }));
     }
-    await q(
-      `UPDATE posts SET status='published', fb_post_id=$2, published_at=now(), attempts=$3, last_error=NULL, next_attempt_at=NULL, updated_at=now() WHERE id=$1`,
-      [post.id, fbId, attempt],
-    );
-    await logAttempt(post.id, attempt, env.PUBLISH_DRY_RUN ? "dry_run" : "success", env.PUBLISH_DRY_RUN ? "Dry run: not sent to Facebook" : `Published as ${fbId}`, raw);
-    log.info("Post published", { postId: post.id, fbId, attempt });
   } catch (err) {
-    const transient = err instanceof MetaError ? err.transient : true;
+    // Unknown errors (not from the Graph client) might have happened after sending: don't retry them.
+    const transient = err instanceof MetaError ? err.transient && !err.uncertain : false;
     const msg = errMsg(err);
     const canRetry = transient && attempt < (post.max_attempts as number);
     if (canRetry) {
       const wait = backoffMinutes(attempt);
       await q(
-        `UPDATE posts SET status='scheduled', attempts=$2, last_error=$3, next_attempt_at=now() + ($4 || ' minutes')::interval, updated_at=now() WHERE id=$1`,
+        `UPDATE posts SET status='scheduled', attempts=$2, last_error=$3, next_attempt_at=now() + ($4 || ' minutes')::interval, updated_at=now()
+         WHERE id=$1 AND status='publishing'`,
         [post.id, attempt, msg, String(wait)],
       );
       await logAttempt(post.id, attempt, "retry_scheduled", `${msg} (retrying in ${wait} min)`, err instanceof MetaError ? err.raw : undefined);
     } else {
-      await q(`UPDATE posts SET status='failed', attempts=$2, last_error=$3, next_attempt_at=NULL, updated_at=now() WHERE id=$1`, [post.id, attempt, msg]);
-      await logAttempt(post.id, attempt, "error", transient ? `${msg} (no retries left)` : `${msg} (not retryable)`, err instanceof MetaError ? err.raw : undefined);
+      await q(`UPDATE posts SET status='failed', attempts=$2, last_error=$3, next_attempt_at=NULL, updated_at=now() WHERE id=$1 AND status='publishing'`, [post.id, attempt, msg]);
+      const why = err instanceof MetaError && err.uncertain ? "(not retried automatically)" : transient ? "(no retries left)" : "(not retryable)";
+      await logAttempt(post.id, attempt, "error", `${msg} ${why}`, err instanceof MetaError ? err.raw : undefined);
     }
     log.warn("Publish attempt failed", { postId: post.id, attempt, transient, error: msg });
+    return;
   }
+
+  // 2. It's on Facebook now. A database error from here on must never lead to publishing again.
+  try {
+    await q(
+      `UPDATE posts SET status='published', fb_post_id=$2, published_at=now(), attempts=$3, last_error=NULL, next_attempt_at=NULL, updated_at=now()
+       WHERE id=$1 AND status='publishing'`,
+      [post.id, fbId, attempt],
+    );
+  } catch (err) {
+    // Leave it in 'publishing': the stale-publishing sweep marks it failed with "check the Page", never retried.
+    log.error("Post was published but saving the result failed", { postId: post.id, fbId, error: errMsg(err) });
+  }
+  try {
+    await logAttempt(post.id, attempt, env.PUBLISH_DRY_RUN ? "dry_run" : "success", env.PUBLISH_DRY_RUN ? "Test mode: not sent to Facebook" : `Published as ${fbId}`, raw);
+  } catch (err) {
+    log.error("Couldn't write publish log", { postId: post.id, error: errMsg(err) });
+  }
+  log.info("Post published", { postId: post.id, fbId, attempt });
 }
 
 let running = false;

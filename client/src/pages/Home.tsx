@@ -3,7 +3,9 @@ import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ago, fmtCompact, fmtDate, POST_STATUS } from "../lib/format";
 import { Icon } from "../components/Icons";
+import { CaughtUpIllustration } from "../components/Illustrations";
 import { Empty, GlowCard, LinkButton, LoadError, PageHead, Skeleton, StatusTag, Tag } from "../components/ui";
+import type { SystemStatus } from "../components/Layout";
 
 interface Dash {
   posts?: { scheduled_week: number; published_month: number; in_review: number; failed: number; my_drafts: number };
@@ -14,6 +16,85 @@ interface Dash {
   leads?: { open: number; needs_review: number; overdue: number; new: number };
   attentionLeads?: { id: number; medicine_name: string | null; destination_country: string | null; category: string; needs_review: boolean; follow_up_at: string | null }[];
 }
+
+/** For administrators: is everything the team needs set up? Each line links to where it's fixed. */
+function SetupCard() {
+  const { data } = useLoad(
+    () => Promise.all([api<SystemStatus>("/status"), api<{ users: { is_active: boolean }[] }>("/users").catch(() => ({ users: [] }))]),
+    [],
+  );
+  if (!data) return null;
+  const [st, us] = data;
+  const people = us.users.filter((u) => u.is_active).length;
+  const test = st.publishTestMode || st.messengerTestMode;
+  const items: { ok: boolean | "info"; title: string; detail: string; to?: string; link?: string }[] = [
+    {
+      ok: st.ai.ready,
+      title: st.ai.ready ? `AI is ready (${st.ai.label})` : `AI isn't ready (${st.ai.label})`,
+      detail: st.ai.ready ? st.ai.model : [st.ai.problem, st.ai.fix].filter(Boolean).join(" "),
+      to: "/settings",
+      link: st.ai.ready ? undefined : "Settings",
+    },
+    {
+      ok: st.facebook.connected,
+      title: st.facebook.connected ? `Facebook Page connected${st.facebook.pageName ? `: ${st.facebook.pageName}` : ""}` : "Facebook Page not connected",
+      detail: st.facebook.connected ? "Posts and Messenger use this Page." : "Connect the Page so posts can be published and inquiries arrive.",
+      to: "/settings",
+      link: st.facebook.connected ? undefined : "Connect the Page",
+    },
+    {
+      ok: "info",
+      title: test ? "Test mode is on" : "Live: posts and replies go to Facebook",
+      detail: test
+        ? `${st.publishTestMode ? "Posts" : ""}${st.publishTestMode && st.messengerTestMode ? " and " : ""}${st.messengerTestMode ? "Messenger replies" : ""} are logged, not sent. Set PUBLISH_DRY_RUN / MESSENGER_DRY_RUN to false in .env and restart to go live.`
+        : "Set PUBLISH_DRY_RUN=true in .env to test safely.",
+    },
+    {
+      ok: people > 1,
+      title: people > 1 ? `${people} people have access` : "Only you have access so far",
+      detail: people > 1 ? "Give each person the least access their job needs." : "Add your marketing and pharmaceutical team.",
+      to: "/users",
+      link: people > 1 ? "Users and roles" : "Add users",
+    },
+  ];
+  const todo = items.filter((i) => i.ok === false).length;
+  return (
+    <section className="card soft mt24" aria-labelledby="setup-h">
+      <div className="spread">
+        <h2 id="setup-h" style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>
+          Setup
+        </h2>
+        {todo ? <Tag tone="warn" dot>{todo} to do</Tag> : <Tag tone="good" dot>All set</Tag>}
+      </div>
+      <ul className="setup-list">
+        {items.map((i) => (
+          <li key={i.title}>
+            <span className={`st ${i.ok === "info" ? "info" : i.ok ? "ok" : "todo"}`} aria-hidden="true">
+              <Icon name={i.ok === "info" ? "info" : i.ok ? "check" : "alert"} />
+            </span>
+            <span className="grow">
+              <b>
+                <span className="sr-only">{i.ok === "info" ? "" : i.ok ? "Done: " : "To do: "}</span>
+                {i.title}
+              </b>
+              <span className="muted small">{i.detail}</span>
+              {i.to && i.link && (
+                <>
+                  {" "}
+                  <Link to={i.to} className="small">
+                    {i.link}
+                  </Link>
+                </>
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+const gridFor = (n: number) => (n >= 4 ? "g4" : n === 3 ? "g3" : n === 2 ? "g2" : "");
 
 export function HomePage() {
   const { user, can } = useAuth();
@@ -42,6 +123,7 @@ export function HomePage() {
     <>
       <PageHead
         title={`${greet}, ${user?.name.split(" ")[0]}`}
+        docTitle="Home"
         sub="What's planned, what's waiting on you and how the Page is doing."
         actions={
           <>
@@ -64,7 +146,10 @@ export function HomePage() {
       ) : (
         data && (
           <>
-            <div className="grid g4">
+            {(() => {
+              const kpis = (data.posts ? 2 : 0) + (data.engagement ? 1 : 0) + (data.leads ? 1 : 0);
+              return kpis ? (
+            <div className={`grid ${gridFor(kpis)}`}>
               {data.posts && (
                 <>
                   <GlowCard
@@ -82,8 +167,8 @@ export function HomePage() {
                     title="Published"
                     sub="This month"
                     value={data.posts.published_month}
-                    to="/posts"
-                    note={data.posts.failed ? <span style={{ color: "var(--bad)" }}>{data.posts.failed} failed to publish</span> : "No failed posts"}
+                    to={data.posts.failed ? "/posts?status=failed" : "/posts"}
+                    note={data.posts.failed ? <span style={{ color: "var(--bad)" }}>{data.posts.failed} failed to publish: see them</span> : "No failed posts"}
                   />
                 </>
               )}
@@ -121,8 +206,12 @@ export function HomePage() {
                 />
               )}
             </div>
+              ) : null;
+            })()}
 
-            <div className="grid g3 mt24">
+            {user?.role === "admin" && <SetupCard />}
+
+            <div className={`grid ${gridFor(1 + (data.upcoming ? 1 : 0) + (data.trends !== undefined ? 1 : 0))} mt24`}>
               <div className="panel attention">
                 <div className="spread">
                   <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>Needs your attention</h3>
@@ -143,7 +232,11 @@ export function HomePage() {
                     ))}
                   </ul>
                 ) : (
-                  <p className="note">You're all caught up.</p>
+                  <div className="attention-empty">
+                    <CaughtUpIllustration />
+                    <b>You're all caught up</b>
+                    <p className="note">Nothing needs your attention right now.</p>
+                  </div>
                 )}
               </div>
 
@@ -162,15 +255,15 @@ export function HomePage() {
                           <span className="ico">
                             <Icon name="cal" />
                           </span>
-                          <div>
-                            <Link to={`/posts/${p.id}`} style={{ color: "inherit" }}>
-                              <b>{p.title}</b>
+                          <div className="tl-body">
+                            <Link to={`/posts/${p.id}`} className="tl-title" title={p.title}>
+                              {p.title}
                             </Link>
-                            <div className="meta">
+                            <div className="tl-meta">
+                              <time dateTime={p.scheduled_at ?? undefined}>{fmtDate(p.scheduled_at, true)}</time>
                               <StatusTag map={POST_STATUS} value={p.status} />
                             </div>
                           </div>
-                          <time>{fmtDate(p.scheduled_at, true)}</time>
                         </li>
                       ))}
                     </ol>
@@ -204,8 +297,8 @@ export function HomePage() {
                       <p className="note">Updated {ago(data.trends.at)}</p>
                     </>
                   ) : (
-                    <Empty title="No trends yet" action={<LinkButton to="/trends" size="sm">Find trends</LinkButton>}>
-                      Scan the health news feeds to see what's being talked about.
+                    <Empty title="No trends yet" action={can("trends.refresh") ? <LinkButton to="/trends" size="sm">Find trends</LinkButton> : undefined}>
+                      {can("trends.refresh") ? "Scan the health news feeds to see what's being talked about." : "Trending topics appear here once the team scans the news feeds."}
                     </Empty>
                   )}
                 </div>
