@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { MediaUpload, mediaSrc, type UploadedMedia } from "../components/MediaUpload";
+import { RevisionModal, StandardsPanel } from "../components/EditorBot";
 import { Link } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -20,7 +21,7 @@ interface Rules {
   addDisclaimer: boolean;
 }
 interface Run {
-  step: "caption" | "schedule" | "check" | "handoff";
+  step: "caption" | "edit" | "schedule" | "check" | "handoff";
   message: string;
   done: number;
   total: number;
@@ -61,6 +62,8 @@ interface Item {
   media_type: "none" | "image" | "video";
   media_url: string | null;
   media_id?: number | null;
+  /** A suggestion from the Editor Bot waiting to be accepted or rejected */
+  pending_revision_id?: number | null;
   caption: string | null;
   keywords: string[];
   hashtags: string[];
@@ -100,7 +103,7 @@ const phTime = (v: string | null) => (v ? `${fmtBiz(v)}` : "No time yet");
 /** Handed off: has a post, or had one that was deleted since (it isn't handed off again). */
 const handed = (i: Item) => !!i.post_id || !!i.handed_off_at;
 
-const RUN_BOT: Record<Run["step"], BotName> = { caption: "caption", schedule: "scheduler", check: "checker", handoff: "posting" };
+const RUN_BOT: Record<Run["step"], BotName> = { caption: "caption", edit: "editor", schedule: "scheduler", check: "checker", handoff: "posting" };
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function storedBatch(): number | null {
@@ -164,6 +167,9 @@ function botViews(ov: Overview, data: BatchData | null): Record<BotName, BotView
         : pending.some((i) => !i.caption)
           ? { mood: "neutral", state: "idle", task: `${pending.filter((i) => !i.caption).length} captions to write` }
           : { mood: "happy", state: "done", task: pending.length ? "All captions written" : "On a coffee break" },
+    editor: pending.some((i) => i.pending_revision_id)
+      ? { mood: "alert", state: "attention", task: `${pending.filter((i) => i.pending_revision_id).length} revision${pending.filter((i) => i.pending_revision_id).length === 1 ? "" : "s"} to review` }
+      : { mood: "determined", state: "idle", task: pending.some((i) => i.caption) ? "Ready to revise" : "Waiting for captions" },
     style: ov.style.trained ? { mood: "happy", state: "done", task: "Writing like your team" } : { mood: "sleep", state: "off", task: "Teach me your style" },
     scheduler: pending.some((i) => !i.scheduled_at)
       ? { mood: "wink", state: "idle", task: `${pending.filter((i) => !i.scheduled_at).length} posts need times` }
@@ -194,15 +200,16 @@ function botViews(ov: Overview, data: BatchData | null): Record<BotName, BotView
 function flowStage(ov: Overview, data: BatchData | null): number {
   if (!data) return 0;
   const run = data.run;
-  if (run) return run.step === "caption" ? 2 : run.step === "schedule" ? 3 : run.step === "check" ? 4 : 5;
+  if (run) return run.step === "caption" ? 2 : run.step === "edit" ? 3 : run.step === "schedule" ? 4 : run.step === "check" ? 5 : 6;
   const pending = data.items.filter((i) => !handed(i));
   const done = data.items.filter(handed);
   if (!data.items.length) return 0;
-  if (!pending.length) return done.every((i) => i.post_status === "published") ? FLOW.length : 6;
+  if (!pending.length) return done.every((i) => i.post_status === "published") ? FLOW.length : 7;
   if (pending.some((i) => !i.caption)) return ov.style.trained ? 2 : 1;
-  if (pending.some((i) => !i.scheduled_at)) return 3;
-  if (!data.batch.checked_at || pending.some((i) => i.issues.some((x) => x.level === "bad"))) return 4;
-  return 5;
+  if (pending.some((i) => i.pending_revision_id)) return 3;
+  if (pending.some((i) => !i.scheduled_at)) return 4;
+  if (!data.batch.checked_at || pending.some((i) => i.issues.some((x) => x.level === "bad"))) return 5;
+  return 6;
 }
 
 // ---------------------------------------------------------------- page
@@ -483,6 +490,7 @@ function FlowView({ stage, onPick }: { stage: number; onPick: (b: BotName) => vo
     add: "You add the posts: notes, key points or a video's transcript, plus an image or video link if there is one.",
     style: "Learns your team's writing from old captions, so every new caption sounds like you.",
     caption: "Writes each caption with search keyword phrases, following the Team rules and the brand guidelines.",
+    editor: "Checks each caption against your standards (length, hook, call to action, words to use or avoid…) and revises it. You accept or reject each revision, unless auto-revise is on.",
     schedule: "Spreads the posts over the days you choose, in Philippine time, without clashing with posts already booked.",
     check: "Flags past times, clashes, posts too close together, brand-rule problems and media Facebook can't reach.",
     handoff: "Turns each ready post into a real post and sends it for review (an administrator can schedule directly).",
@@ -650,6 +658,7 @@ function Workspace({
   const [busy, setBusy] = useState<string | null>(null);
   const [recaption, setRecaption] = useState(false);
   const [editing, setEditing] = useState<Item | null>(null);
+  const [reviewing, setReviewing] = useState<Item | null>(null);
   const [removing, setRemoving] = useState<Item | null>(null);
   const [handoff, setHandoff] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -768,11 +777,23 @@ function Workspace({
       ) : (
         <div className="stackv" style={{ gap: 12 }}>
           {items.map((it, i) => (
-            <ItemCard key={it.id} it={it} n={i + 1} checked={!!data.batch.checked_at} last={i === items.length - 1} locked={locked} onMove={(d) => move(i, d)} onEdit={() => setEditing(it)} onDelete={() => setRemoving(it)} />
+            <ItemCard key={it.id} it={it} n={i + 1} checked={!!data.batch.checked_at} last={i === items.length - 1} locked={locked} onMove={(d) => move(i, d)} onEdit={() => setEditing(it)} onDelete={() => setRemoving(it)} onReview={() => setReviewing(it)} />
           ))}
         </div>
       )}
 
+      {reviewing && (
+        <RevisionModal
+          text={reviewing.caption ?? ""}
+          itemId={reviewing.id}
+          revisionId={reviewing.pending_revision_id ?? null}
+          onAccept={() => void onChange()}
+          onClose={() => {
+            setReviewing(null);
+            void onChange();
+          }}
+        />
+      )}
       {editing && (
         <EditItemModal
           item={editing}
@@ -1001,7 +1022,7 @@ function AddPosts({ batchId, disabled, onAdded }: { batchId: number; disabled: b
   );
 }
 
-function ItemCard({ it, n, checked, last, locked, onMove, onEdit, onDelete }: { it: Item; n: number; checked: boolean; last: boolean; locked: boolean; onMove: (d: -1 | 1) => void; onEdit: () => void; onDelete: () => void }) {
+function ItemCard({ it, n, checked, last, locked, onMove, onEdit, onDelete, onReview }: { it: Item; n: number; checked: boolean; last: boolean; locked: boolean; onMove: (d: -1 | 1) => void; onEdit: () => void; onDelete: () => void; onReview: () => void }) {
   const bad = it.issues.filter((x) => x.level === "bad");
   const warn = it.issues.filter((x) => x.level === "warn");
   const done = handed(it);
@@ -1032,6 +1053,17 @@ function ItemCard({ it, n, checked, last, locked, onMove, onEdit, onDelete }: { 
       </p>
       {it.caption ? <p className="pre clamp-4">{it.caption}</p> : <p className="muted clamp">{it.brief}</p>}
       {it.caption_error && !it.caption && <Alert tone="bad">The Caption Bot couldn't write this one: {it.caption_error}</Alert>}
+      {it.pending_revision_id && !handed(it) && (
+        <div className="ed-suggest">
+          <BotFace bot="editor" mood="happy" size={30} />
+          <span className="grow">The Editor Bot revised this caption to meet your standards.</span>
+          {!locked && (
+            <Button size="sm" variant="primary" onClick={onReview}>
+              Review revision
+            </Button>
+          )}
+        </div>
+      )}
       {(it.keywords.length > 0 || it.hashtags.length > 0) && (
         <div className="row" style={{ gap: 6 }}>
           {it.keywords.map((k) => (
@@ -1062,6 +1094,11 @@ function ItemCard({ it, n, checked, last, locked, onMove, onEdit, onDelete }: { 
               <Button size="sm" variant="soft" icon="edit" onClick={onEdit}>
                 Edit
               </Button>
+              {it.caption && !it.pending_revision_id && (
+                <Button size="sm" variant="quiet" icon="spark" onClick={onReview}>
+                  Editor Bot
+                </Button>
+              )}
               <IconButton icon="chev-l" label="Move up" disabled={n === 1} onClick={() => onMove(-1)} style={{ transform: "rotate(90deg)" }} />
               <IconButton icon="chev-r" label="Move down" disabled={last} onClick={() => onMove(1)} style={{ transform: "rotate(90deg)" }} />
               <IconButton icon="trash" label="Remove" danger onClick={onDelete} />
@@ -1323,6 +1360,7 @@ function BotPanel({
       {bot === "scheduler" && <SchedulerPanel data={data} editable={editable} onChange={onChange} onDirty={onDirty} />}
       {bot === "checker" && <CheckerPanel o={o} data={data} editable={editable} onChange={onChange} />}
       {bot === "posting" && <PostingPanel o={o} data={data} />}
+      {bot === "editor" && <StandardsPanel canEdit={canBrand} onSaved={() => void onChange()} onDirty={onDirty} />}
     </>
   );
 }

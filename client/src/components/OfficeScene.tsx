@@ -27,8 +27,9 @@ const DESKS: Record<BotName, P> = {
   caption: [3, 3.2],
   style: [6.5, 3.2],
   scheduler: [10, 3.2],
-  posting: [4.8, 6.6],
-  checker: [8.3, 6.6],
+  posting: [3, 6.6],
+  checker: [6.5, 6.6],
+  editor: [10, 6.6],
 };
 const seatOf = (b: BotName): P => [DESKS[b][0], DESKS[b][1] - 0.95];
 
@@ -47,7 +48,7 @@ const SPOTS: Spot[] = [
   { id: "coffee", label: "Getting coffee", mood: "happy", prop: "mug", pos: [13.6, 1.75], entry: [[13.6, AISLE], [13.6, 1.75]] },
   { id: "water", label: "Getting water", mood: "wink", prop: "mug", pos: [1.25, 4.3], entry: [[1.25, AISLE], [1.25, 4.3]] },
   { id: "books", label: "Reading", mood: "neutral", prop: "book", pos: [1.25, 2.0], entry: [[1.25, AISLE], [1.25, 2.0]] },
-  { id: "arcade", label: "Playing a game", mood: "focus", pos: [1.85, 7.0], entry: [[1.85, AISLE], [1.85, 7.0]] },
+  { id: "arcade", label: "Playing a game", mood: "focus", pos: [1.45, 7.0], entry: [[1.45, AISLE], [1.45, 7.0]] },
   { id: "window1", label: "Looking outside", mood: "happy", pos: [10.2, 1.25], entry: [[11.8, AISLE], [11.8, 1.3], [10.2, 1.25]] },
   { id: "window2", label: "Looking outside", mood: "wink", pos: [7.0, 1.25], entry: [[11.8, AISLE], [11.8, 1.3], [7.0, 1.25]] },
   { id: "sofa1", label: "Taking a break", mood: "happy", pos: [13.3, 7.0], sit: true, entry: [[12.1, AISLE], [12.1, 7.6], [13.3, 7.6], [13.3, 7.0]] },

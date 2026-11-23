@@ -1,0 +1,17 @@
+/* ---- Editor Bot: revision window and standards ---- */
+.ed-diff { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.7; padding: 14px 16px; border: 1px solid var(--rule); border-radius: 14px; background: var(--bench); max-height: 300px; overflow: auto; }
+.ed-diff ins { text-decoration: none; background: #d7f5e1; color: #0f5c32; border-radius: 4px; padding: 0 1px; }
+.ed-diff del { background: #fde3e1; color: #9b1c15; border-radius: 4px; padding: 0 1px; }
+.ed-rules { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.ed-rules li { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; padding: 6px 10px; border-radius: 10px; }
+.ed-rules li.ok { background: var(--good-bg); }
+.ed-rules li.bad { background: var(--bad-bg); }
+.ed-rules li.info { background: var(--bench); }
+.ed-rules b { font-weight: 500; }
+.ed-detail { color: var(--ink-3); }
+.ed-mark { flex: none; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #fff; background: var(--outline); margin-top: 1px; }
+.ed-rules li.ok .ed-mark { background: var(--green); }
+.ed-rules li.bad .ed-mark { background: var(--red); }
+.ed-compare .label { margin-bottom: 8px; }
+.ed-tag { display: inline-flex; align-items: center; gap: 6px; }
+.ed-suggest { display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 12px; border-radius: 14px; background: #e6f7f6; border: 1px solid #b6e6e3; font-size: 13px; color: #0b5e5b; margin-top: 8px; }

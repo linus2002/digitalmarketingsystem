@@ -7,6 +7,7 @@ import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icons";
 import { Alert, Avatar, Button, ConfirmModal, LoadError, Modal, PageHead, SelectField, Skeleton, StatusTag, Steps, Tag, TextArea, TextField } from "../components/ui";
 import { MediaPreview, MediaUpload, type UploadedMedia } from "../components/MediaUpload";
+import { RevisionModal } from "../components/EditorBot";
 import "../styles/posts.css";
 
 // ---------------- Shared helpers for the posts pages ----------------
@@ -206,6 +207,7 @@ export function PostEditorPage() {
 
   const [form, setForm] = useState<Form>(EMPTY);
   const [showLinks, setShowLinks] = useState(false);
+  const [revising, setRevising] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [check, setCheck] = useState<{ issues: string[]; hasDisclaimer: boolean; disclaimer: string } | null>(null);
@@ -483,6 +485,25 @@ export function PostEditorPage() {
               hint={`${form.message.length} characters`}
               placeholder="What do you want to say?"
             />
+            {editable && can("content.generate") && (
+              <div className="row" style={{ marginTop: -6 }}>
+                <Button size="sm" variant="soft" icon="spark" disabled={!form.message.trim()} onClick={() => setRevising(true)}>
+                  Revise with Editor Bot
+                </Button>
+                <span className="note mt0">Checks the text against your standards and suggests a revision.</span>
+              </div>
+            )}
+            {revising && (
+              <RevisionModal
+                text={form.message}
+                postId={post?.id ?? null}
+                onAccept={(t) => {
+                  setForm((f) => ({ ...f, message: t }));
+                  setDirty(true);
+                }}
+                onClose={() => setRevising(false)}
+              />
+            )}
             <TextField label="Hashtags" optional value={form.hashtags} onChange={set("hashtags")} disabled={!editable} placeholder="#CancerAwareness #GetMeds" hint="Separate with spaces. They're added at the end unless already in the text." />
             {check && (check.issues.length > 0 || !check.hasDisclaimer) && (
               <Alert tone="warn" title="Brand and compliance check">

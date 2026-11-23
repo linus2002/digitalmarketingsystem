@@ -3,16 +3,17 @@
 // journey path showing how a batch moves from notes to a published Facebook post.
 
 
-export type BotName = "caption" | "style" | "scheduler" | "checker" | "posting";
+export type BotName = "caption" | "style" | "scheduler" | "checker" | "posting" | "editor";
 export type Mood = "neutral" | "happy" | "focus" | "alert" | "wink" | "sad" | "sleep" | "determined";
 
-export const BOT_ORDER: BotName[] = ["caption", "style", "scheduler", "checker", "posting"];
+export const BOT_ORDER: BotName[] = ["caption", "style", "editor", "scheduler", "checker", "posting"];
 
 export const BOTS: Record<BotName, { name: string; role: string; line: string; color: string; mood: Mood }> = {
   caption: { name: "Caption Bot", role: "Writes every caption with search keywords", line: "Give me your notes or the video's transcript. I'll write the caption.", color: "#1f5fd6", mood: "neutral" },
   style: { name: "Style Bot", role: "Learns how your team writes", line: "Show me captions you've written. I'll teach the Caption Bot your style.", color: "#7c5cff", mood: "happy" },
   scheduler: { name: "Scheduler Bot", role: "Picks the dates and times", line: "Tell me the days. I'll find times that don't clash.", color: "#1e9e57", mood: "wink" },
   checker: { name: "Checker Bot", role: "Checks everything, before and after", line: "I check every post before anything goes out, and follow up after.", color: "#f2b01e", mood: "determined" },
+  editor: { name: "Editor Bot", role: "Revises posts to meet your standards", line: "Tell me your standards. I'll revise every post until it meets them.", color: "#0e9f9a", mood: "determined" },
   posting: { name: "Posting Bot", role: "Hands posts to approval and the Page", line: "Hand them to me. I'll line them up for review and publishing.", color: "#d93a32", mood: "happy" },
 };
 
@@ -220,6 +221,7 @@ export const FLOW: FlowStage[] = [
   { key: "add", title: "Add posts", lane: "Prepare", bot: "you" },
   { key: "style", title: "Learn the style", lane: "Prepare", bot: "style" },
   { key: "caption", title: "Write captions", lane: "Prepare", bot: "caption" },
+  { key: "editor", title: "Revise to your standards", lane: "Prepare", bot: "editor" },
   { key: "schedule", title: "Pick times", lane: "Plan", bot: "scheduler" },
   { key: "check", title: "Check everything", lane: "Check", bot: "checker" },
   { key: "handoff", title: "Hand off", lane: "Check", bot: "posting" },
@@ -242,7 +244,7 @@ export function BotFlow({ current, done }: { current: number; done: number }) {
   const iso = isoFn(250, 40, 30);
   // Path: along x (stations 0-2), down a connector along y (3), then back along -x (4-6).
   const stations: [number, number][] = [
-    [1.2, 1], [4.4, 1], [7.6, 1], [8.0, 4.0], [7.0, 7], [4.2, 7], [1.4, 7],
+    [0.9, 1], [3.1, 1], [5.3, 1], [7.6, 1], [8.0, 4.0], [7.0, 7], [4.2, 7], [1.4, 7],
   ];
   const lanes: { x0: number; y0: number; x1: number; y1: number; top: string; left: string; right: string; label: string; lx: number; ly: number }[] = [
     { x0: 0, y0: 0, x1: 9, y1: 2, top: "#dbe6fd", left: "#b9cdf8", right: "#a9c1f6", label: "Prepare", lx: 4.5, ly: 2.15 },

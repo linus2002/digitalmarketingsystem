@@ -362,13 +362,13 @@ async function assertAiReady(role: string) {
 botsRouter.post("/batches/:id/run", edit, async (req, res) => {
   const id = intParam(req.params.id);
   const b = parse(
-    z.object({ steps: z.array(z.enum(["caption", "schedule", "check"])).min(1).default(["caption", "schedule", "check"]), recaption: z.boolean().default(false) }),
+    z.object({ steps: z.array(z.enum(["caption", "edit", "schedule", "check"])).min(1).default(["caption", "edit", "schedule", "check"]), recaption: z.boolean().default(false) }),
     req.body ?? {},
   );
   const { items } = await loadBatch(id);
   if (!items.some((i) => !i.post_id && !i.handed_off_at)) throw badRequest("Add some posts to the batch first.");
-  if (b.steps.includes("caption")) await assertAiReady(req.user!.role);
-  const order = (["caption", "schedule", "check"] as const).filter((s) => b.steps.includes(s));
+  if (b.steps.includes("caption") || b.steps.includes("edit")) await assertAiReady(req.user!.role);
+  const order = (["caption", "edit", "schedule", "check"] as const).filter((s) => b.steps.includes(s));
   const run = await startRun(id, req.user!.id, { steps: [...order], recaption: b.recaption });
   res.status(202).json({ run });
 });
