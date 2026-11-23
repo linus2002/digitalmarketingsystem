@@ -3,6 +3,8 @@ import { z } from "zod";
 import { one, q, tx, type Db, type Row } from "../lib/db.js";
 import { badRequest, conflict, forbidden, intParam, notFound, parse } from "../lib/http.js";
 import { audit } from "../lib/audit.js";
+import { notify, usersWithPerm } from "../services/notifications.js";
+import { fmtPh } from "../services/bots.js";
 import { requirePerm, userCan } from "../middleware/auth.js";
 import { composeMessage } from "../services/publisher.js";
 
@@ -62,6 +64,8 @@ const postBody = z.object({
   hashtags: z.array(z.string().max(60)).max(30).default([]),
   image_url: mediaUrl("image").nullable().optional(),
   video_url: mediaUrl("video").nullable().optional(),
+  /** An uploaded image or video (POST /api/media). */
+  media_id: z.number().int().positive().nullable().optional(),
   image_prompt: z.string().max(2000).nullable().optional(),
   link_url: z.string().url().max(1000).nullable().optional(),
   campaign_id: z.number().int().nullable().optional(),
@@ -70,16 +74,23 @@ const postBody = z.object({
   source_topic: z.string().max(300).nullable().optional(),
 });
 
-const BOTH_MEDIA = "Use either an image or a video, not both. Remove one of them.";
+const BOTH_MEDIA = "Use one image or one video per post (an upload or a link, not both). Remove the others.";
 /** Fields that change what gets published. Same list as the editor's "needs approval again" warning. */
-const CONTENT_FIELDS = ["title", "message", "hashtags", "image_url", "video_url", "link_url"] as const;
+const CONTENT_FIELDS = ["title", "message", "hashtags", "image_url", "video_url", "media_id", "link_url"] as const;
+
+async function checkMediaExists(id: number | null | undefined) {
+  if (!id) return;
+  if (!(await one("SELECT id FROM media WHERE id=$1", [id]))) throw badRequest("That uploaded file wasn't found. Upload it again.");
+}
+const mediaCount = (...xs: unknown[]) => xs.filter(Boolean).length;
 const EDITABLE = ["draft", "changes_requested", "in_review", "approved", "scheduled", "failed"];
 
 async function load(id: number): Promise<Row> {
   const post = await one(
-    `SELECT p.*, c.name AS campaign_name, cu.name AS created_by_name, au.name AS approved_by_name, eu.name AS last_edited_by_name
+    `SELECT p.*, c.name AS campaign_name, cu.name AS created_by_name, au.name AS approved_by_name, eu.name AS last_edited_by_name,
+            md.kind AS media_kind, md.mime AS media_mime, md.original_name AS media_name, md.size_bytes AS media_size
      FROM posts p LEFT JOIN campaigns c ON c.id=p.campaign_id LEFT JOIN users cu ON cu.id=p.created_by LEFT JOIN users au ON au.id=p.approved_by
-     LEFT JOIN users eu ON eu.id=p.last_edited_by
+     LEFT JOIN users eu ON eu.id=p.last_edited_by LEFT JOIN media md ON md.id=p.media_id
      WHERE p.id=$1`,
     [id],
   );
@@ -140,13 +151,92 @@ postsRouter.get("/", requirePerm("posts.view"), async (req, res) => {
   params.push(f.limit);
   const posts = await q(
     `SELECT p.id, p.title, p.message, p.status, p.scheduled_at, p.published_at, p.next_attempt_at, p.attempts, p.last_error, p.campaign_id, p.image_url, p.video_url,
-            p.hashtags, p.fb_post_id, p.ai_generated, p.created_at, p.updated_at, c.name AS campaign_name, u.name AS created_by_name
+            p.hashtags, p.fb_post_id, p.ai_generated, p.created_at, p.updated_at, c.name AS campaign_name, u.name AS created_by_name,
+            p.media_id, (SELECT kind FROM media WHERE id = p.media_id) AS media_kind
      FROM posts p LEFT JOIN campaigns c ON c.id=p.campaign_id LEFT JOIN users u ON u.id=p.created_by
      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
      ORDER BY COALESCE(p.scheduled_at, p.published_at, p.updated_at) DESC LIMIT $${params.length}`,
     params,
   );
   res.json({ posts });
+});
+
+/**
+ * Import posts from a spreadsheet (the browser reads the Excel/CSV file and sends the rows).
+ * Every row becomes a DRAFT: nothing is approved or scheduled by an import. Valid rows are created,
+ * invalid ones are reported by row number so they can be fixed and imported again.
+ */
+postsRouter.post("/import", requirePerm("posts.edit"), async (req, res) => {
+  const { rows } = parse(
+    z.object({
+      rows: z
+        .array(
+          z.object({
+            row: z.number().int().min(1),
+            title: z.string().max(500).optional(),
+            message: z.string().max(10_000).optional(),
+            hashtags: z.string().max(2000).optional(),
+            planned_at: z.string().datetime({ offset: true }).nullable().optional(),
+            campaign: z.string().max(200).optional(),
+            image_url: z.string().max(2000).optional(),
+            video_url: z.string().max(2000).optional(),
+            link_url: z.string().max(2000).optional(),
+          }),
+        )
+        .min(1, "The file has no posts in it.")
+        .max(200, "Import up to 200 posts at a time."),
+    }),
+    req.body,
+  );
+  const campaigns = await q<{ id: number; name: string }>("SELECT id, name FROM campaigns WHERE status <> 'archived'");
+  const byName = new Map(campaigns.map((c) => [c.name.trim().toLowerCase(), c.id]));
+  const created: { row: number; id: number; title: string }[] = [];
+  const errors: { row: number; error: string }[] = [];
+  const warnings: { row: number; warning: string }[] = [];
+
+  for (const r of rows) {
+    const message = (r.message ?? "").trim();
+    const title = ((r.title ?? "").trim() || message.split(/[.!?\n]/)[0] || "").slice(0, 200);
+    const hashtags = (r.hashtags ?? "")
+      .split(/[\s,]+/)
+      .map((h) => h.trim())
+      .filter(Boolean)
+      .map((h) => (h.startsWith("#") ? h : `#${h}`))
+      .slice(0, 30);
+    const candidate = {
+      title,
+      message,
+      hashtags,
+      image_url: r.image_url?.trim() || null,
+      video_url: r.video_url?.trim() || null,
+      link_url: r.link_url?.trim() || null,
+      scheduled_at: r.planned_at ?? null,
+    };
+    const check = postBody.safeParse(candidate);
+    if (!check.success) {
+      const i = check.error.issues[0];
+      const field = { title: "Title", message: "Post text", hashtags: "Hashtags", image_url: "Image URL", video_url: "Video URL", link_url: "Link" }[String(i?.path[0])] ?? String(i?.path[0] ?? "");
+      errors.push({ row: r.row, error: !message ? "Post text is empty." : `${field}: ${i?.message ?? "not valid"}` });
+      continue;
+    }
+    if (candidate.image_url && candidate.video_url) {
+      errors.push({ row: r.row, error: BOTH_MEDIA });
+      continue;
+    }
+    let campaignId: number | null = null;
+    if (r.campaign?.trim()) {
+      campaignId = byName.get(r.campaign.trim().toLowerCase()) ?? null;
+      if (!campaignId) warnings.push({ row: r.row, warning: `No campaign called "${r.campaign.trim()}": imported without a campaign.` });
+    }
+    const post = await one<{ id: number }>(
+      `INSERT INTO posts (title, message, hashtags, image_url, video_url, link_url, campaign_id, scheduled_at, source_topic, created_by, last_edited_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Imported from a spreadsheet',$9,$9) RETURNING id`,
+      [candidate.title, candidate.message, candidate.hashtags, candidate.image_url, candidate.video_url, candidate.link_url, campaignId, candidate.scheduled_at, req.user!.id],
+    );
+    created.push({ row: r.row, id: post!.id, title: candidate.title });
+  }
+  await audit(req, "post.imported", "post", null, { created: created.length, failed: errors.length });
+  res.status(created.length ? 201 : 200).json({ created, errors, warnings });
 });
 
 postsRouter.get("/counts", requirePerm("posts.view"), async (_req, res) => {
@@ -167,11 +257,12 @@ postsRouter.get("/:id", requirePerm("posts.view"), async (req, res) => {
 
 postsRouter.post("/", requirePerm("posts.edit"), async (req, res) => {
   const b = parse(postBody, req.body);
-  if (b.image_url && b.video_url) throw badRequest(BOTH_MEDIA);
+  if (mediaCount(b.image_url, b.video_url, b.media_id) > 1) throw badRequest(BOTH_MEDIA);
+  await checkMediaExists(b.media_id);
   const post = await one(
-    `INSERT INTO posts (title, message, hashtags, image_url, image_prompt, link_url, campaign_id, scheduled_at, ai_generated, source_topic, created_by, video_url, last_edited_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$11) RETURNING id`,
-    [b.title, b.message, b.hashtags, b.image_url ?? null, b.image_prompt ?? null, b.link_url ?? null, b.campaign_id ?? null, b.scheduled_at ?? null, b.ai_generated ?? false, b.source_topic ?? null, req.user!.id, b.video_url ?? null],
+    `INSERT INTO posts (title, message, hashtags, image_url, image_prompt, link_url, campaign_id, scheduled_at, ai_generated, source_topic, created_by, video_url, last_edited_by, media_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$11,$13) RETURNING id`,
+    [b.title, b.message, b.hashtags, b.image_url ?? null, b.image_prompt ?? null, b.link_url ?? null, b.campaign_id ?? null, b.scheduled_at ?? null, b.ai_generated ?? false, b.source_topic ?? null, req.user!.id, b.video_url ?? null, b.media_id ?? null],
   );
   await audit(req, "post.created", "post", post!.id);
   res.status(201).json({ post: await load(post!.id) });
@@ -184,7 +275,9 @@ postsRouter.patch("/:id", requirePerm("posts.edit"), async (req, res) => {
   const b = parse(postBody.partial(), req.body);
   const nextImage = "image_url" in b ? (b.image_url ?? null) : post.image_url;
   const nextVideo = "video_url" in b ? (b.video_url ?? null) : post.video_url;
-  if (("image_url" in b || "video_url" in b) && nextImage && nextVideo) throw badRequest(BOTH_MEDIA);
+  const nextMedia = "media_id" in b ? (b.media_id ?? null) : post.media_id;
+  if (("image_url" in b || "video_url" in b || "media_id" in b) && mediaCount(nextImage, nextVideo, nextMedia) > 1) throw badRequest(BOTH_MEDIA);
+  if ("media_id" in b) await checkMediaExists(b.media_id);
   const contentChanged = CONTENT_FIELDS.some((k) => k in b && JSON.stringify((b as Row)[k] ?? null) !== JSON.stringify(post[k] ?? null));
   const resetApproval = contentChanged && ["approved", "scheduled", "in_review", "failed"].includes(post.status);
   // Applies only if the status is still the one resetApproval was based on, so a post that started
@@ -195,6 +288,7 @@ postsRouter.patch("/:id", requirePerm("posts.edit"), async (req, res) => {
        link_url=CASE WHEN $13 THEN $7 ELSE link_url END, campaign_id=CASE WHEN $14 THEN $8 ELSE campaign_id END,
        scheduled_at=CASE WHEN $15 THEN $9 ELSE scheduled_at END,
        video_url=CASE WHEN $16 THEN $17 ELSE video_url END,
+       media_id=CASE WHEN $22 THEN $23::int ELSE media_id END,
        last_edited_by=CASE WHEN $19 THEN $20 ELSE last_edited_by END,
        status=CASE WHEN $10 THEN 'draft' ELSE status END,
        approved_by=CASE WHEN $10 THEN NULL ELSE approved_by END, approved_at=CASE WHEN $10 THEN NULL ELSE approved_at END,
@@ -222,6 +316,8 @@ postsRouter.patch("/:id", requirePerm("posts.edit"), async (req, res) => {
       contentChanged,
       req.user!.id,
       EDITABLE,
+      "media_id" in b,
+      b.media_id ?? null,
     ],
   );
   if (!rows.length) throw conflict("This post changed while you were editing (it may be publishing now). Reload to see the latest version.");
@@ -250,6 +346,9 @@ postsRouter.post("/:id/submit", requirePerm("posts.edit"), async (req, res) => {
   await guarded("UPDATE posts SET status='in_review', updated_at=now()", id, allowed, [], "sent for review");
   await review(id, req, "submitted", note);
   await audit(req, "post.submitted", "post", id);
+  // Approvers, except the people who can't approve this one (its author and last editor, unless they're admins).
+  const approvers = (await usersWithPerm("posts.approve", [req.user!.id])).filter((u) => u !== post.created_by && u !== post.last_edited_by);
+  await notify(approvers, { kind: "post.review", title: "A post is waiting for your approval", body: `"${post.title}" from ${req.user!.name}`, link: `/posts/${id}` });
   res.json({ post: await load(id) });
 });
 
@@ -282,6 +381,14 @@ postsRouter.post("/:id/approve", requirePerm("posts.approve"), async (req, res) 
     }
   });
   await audit(req, "post.approved", "post", id, { scheduledAt: b.scheduleAt });
+  if (post.created_by !== req.user!.id)
+    await notify([post.created_by], {
+      kind: "post.approved",
+      level: "good",
+      title: "Your post was approved",
+      body: `${req.user!.name} approved "${post.title}"${b.scheduleAt ? `. It goes out ${fmtPh(new Date(b.scheduleAt))} (Philippine time).` : "."}`,
+      link: `/posts/${id}`,
+    });
   res.json({ post: await load(id) });
 });
 
@@ -293,6 +400,7 @@ postsRouter.post("/:id/request-changes", requirePerm("posts.approve"), async (re
   await guarded("UPDATE posts SET status='changes_requested', updated_at=now()", id, ["in_review"], [], "sent back");
   await review(id, req, "changes_requested", comment);
   await audit(req, "post.changes_requested", "post", id);
+  await notify([post.created_by], { kind: "post.changes", level: "warn", title: "Changes requested on your post", body: `${req.user!.name} on "${post.title}": ${comment}`, link: `/posts/${id}` });
   res.json({ post: await load(id) });
 });
 

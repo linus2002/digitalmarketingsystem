@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { Icon, type IconName } from "./Icons";
-import { Avatar } from "./ui";
+import { TopBar } from "./TopBar";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
 
@@ -111,7 +111,7 @@ function StatusBanner({ status, isAdmin }: { status: SystemStatus | null; isAdmi
 }
 
 export function Layout() {
-  const { user, can, logout } = useAuth();
+  const { user, can } = useAuth();
   const loc = useLocation();
   const narrow = useNarrow();
   const [open, setOpen] = useState(false);
@@ -181,25 +181,24 @@ export function Layout() {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, narrow, closeDrawer]);
 
-  const reviewer = can("posts.edit") || can("posts.approve");
   const groups: { title?: string; items: Item[] }[] = [
     { items: [{ to: "/", label: "Home", icon: "home", end: true }] },
     {
       title: "Plan",
       items: [
         { to: "/trends", label: "Trending topics", icon: "trend", perm: "trends.view" },
-        { to: "/calendar", label: "Content calendar", icon: "cal", perm: "posts.view" },
+        { to: "/calendar", label: "Post calendar", icon: "cal", perm: "posts.view" },
         { to: "/campaigns", label: "Campaigns", icon: "flag", perm: "posts.view" },
       ],
     },
     {
       title: "Create",
       items: [
-        { to: "/studio", label: "AI content studio", icon: "spark", perm: "content.generate" },
+        { to: "/studio", label: "AI studio", icon: "spark", perm: "content.generate" },
         { to: "/bots", label: "AI bots", icon: "bot", perm: "content.generate" },
         {
           to: "/posts",
-          label: reviewer ? "Posts and approvals" : "Posts",
+          label: "Post approvals",
           icon: "doc",
           perm: "posts.view",
           count: counts.review,
@@ -211,23 +210,23 @@ export function Layout() {
     {
       title: "Measure",
       items: [
-        { to: "/analytics", label: "Facebook analytics", icon: "chart", perm: "analytics.view" },
+        { to: "/analytics", label: "Page analytics", icon: "chart", perm: "analytics.view" },
         { to: "/reports", label: "Reports", icon: "list", perm: "reports.view" },
-        { to: "/logs/publishing", label: "Publishing log", icon: "clock", perm: "logs.view" },
+        { to: "/logs/publishing", label: "Publish log", icon: "clock", perm: "logs.view" },
       ],
     },
     {
       title: "Inquiries",
       items: [
         { to: "/leads", label: "Inquiries", icon: "inbox", perm: "leads.view", count: counts.leads, countTo: "/leads?filter=review", countLabel: "waiting on you" },
-        { to: "/templates", label: "Response templates", icon: "msg", perm: "templates.view" },
+        { to: "/templates", label: "Reply templates", icon: "msg", perm: "templates.view" },
       ],
     },
     {
       title: "Admin",
       items: [
         { to: "/settings", label: "Settings", icon: "settings", anyOf: ["settings.manage", "settings.brand"] },
-        { to: "/users", label: "Users and roles", icon: "users", perm: "users.manage" },
+        { to: "/users", label: "Users", icon: "users", perm: "users.manage" },
         { to: "/logs/audit", label: "Audit log", icon: "shield", perm: "audit.view" },
       ],
     },
@@ -239,23 +238,6 @@ export function Layout() {
       <a href="#main" className="skip-link">
         Skip to content
       </a>
-      <div className="topbar">
-        <button
-          ref={menuBtn}
-          type="button"
-          className="btn btn-icon"
-          aria-label="Open menu"
-          aria-expanded={open}
-          aria-controls="side-nav"
-          onClick={() => setOpen(true)}
-        >
-          <Icon name="menu" />
-        </button>
-        <span className="mark" style={{ width: 30, height: 30, borderRadius: "50%", background: "var(--primary)", color: "#fff", display: "grid", placeItems: "center", fontSize: 11, fontWeight: 700 }}>
-          {BRAND.short}
-        </span>
-        <b style={{ fontSize: 14 }}>{BRAND.name}</b>
-      </div>
       {/* Pointer-only dismiss: keyboard users close with Escape or the Close button */}
       {open && <div className="scrim" aria-hidden="true" onClick={() => closeDrawer(true)} />}
       <aside className="side" id="side-nav" ref={sideRef} aria-hidden={drawerHidden || undefined} aria-label="Menu">
@@ -303,30 +285,37 @@ export function Layout() {
             );
           })}
         </nav>
-        <div className="side-foot">
-          <Link to="/account" className="who-link" aria-label={`Your account: ${user?.name ?? ""}`}>
-            <Avatar name={user?.name} size="sm" />
-            <span className="who">
-              <b>{user?.name}</b>
-              <span>{user?.roleLabel}</span>
-            </span>
-          </Link>
-          <div className="side-actions">
-            <Link to="/account" className="btn btn-quiet btn-sm">
-              <Icon name="users" />
-              Account
-            </Link>
-            <button type="button" className="btn btn-quiet btn-sm" onClick={() => void logout()}>
-              <Icon name="logout" />
-              Sign out
-            </button>
-          </div>
-        </div>
       </aside>
-      <main className="main" id="main" ref={mainRef} tabIndex={-1}>
-        <StatusBanner status={status} isAdmin={user?.role === "admin"} />
-        <Outlet />
-      </main>
+      <div className="app-col">
+        <TopBar
+          org={status?.businessName ?? BRAND.org}
+          start={
+            narrow && (
+              <>
+                <button
+                  ref={menuBtn}
+                  type="button"
+                  className="btn btn-icon"
+                  aria-label="Open menu"
+                  aria-expanded={open}
+                  aria-controls="side-nav"
+                  onClick={() => setOpen(true)}
+                >
+                  <Icon name="menu" />
+                </button>
+                <span className="appbar-brand">
+                  <span className="mark">{BRAND.short}</span>
+                  {BRAND.name}
+                </span>
+              </>
+            )
+          }
+        />
+        <main className="main" id="main" ref={mainRef} tabIndex={-1}>
+          <StatusBanner status={status} isAdmin={user?.role === "admin"} />
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }

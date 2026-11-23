@@ -1,0 +1,16 @@
+/* ---- Export menu and import window ---- */
+.xp-wrap { position: relative; display: inline-block; }
+.xp-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 50; width: 250px; background: var(--canvas); border: 1px solid var(--rule); border-radius: 16px; box-shadow: 0 16px 40px rgba(20, 30, 60, .14); padding: 6px; animation: rise .12s ease-out; }
+.xp-item { display: grid; width: 100%; text-align: left; gap: 1px; padding: 9px 12px; border: 0; background: transparent; border-radius: 10px; cursor: pointer; font: inherit; color: inherit; }
+.xp-item:hover { background: var(--bench); }
+.xp-item b { font-weight: 500; font-size: 13.5px; }
+.xp-item span { font-size: 12px; color: var(--ink-3); }
+.imp-table { max-height: 340px; overflow: auto; border: 1px solid var(--rule); border-radius: 14px; }
+.imp-table th, .imp-table td { padding: 8px 12px; font-size: 13px; vertical-align: top; }
+.imp-table .clamp { max-width: 340px; }
+.imp-bad { color: var(--bad); font-size: 12.5px; display: inline-flex; gap: 4px; align-items: flex-start; }
+.imp-ok { color: var(--good); }
+.imp-line { margin: 0; font-size: 13px; padding: 6px 12px; border-radius: 10px; }
+.imp-line.bad { background: var(--bad-bg); color: #7a1810; }
+.imp-line.warn { background: var(--warn-bg); color: #5c3c00; }
+.imp-empty { text-align: center; padding: 20px; border: 1.5px dashed var(--rule); border-radius: 16px; display: grid; justify-items: center; gap: 6px; color: var(--ink-2); }

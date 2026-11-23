@@ -2,7 +2,7 @@
 export type IconName =
   | "home" | "users" | "pin" | "doc" | "deal" | "cal" | "mail" | "search" | "plus" | "edit" | "trash" | "bell"
   | "clock" | "alert" | "info" | "check" | "filter" | "more" | "phone" | "spark" | "chart" | "inbox" | "settings"
-  | "logout" | "shield" | "trend" | "send" | "refresh" | "list" | "menu" | "download" | "eye" | "eye-off" | "x" | "chev-l" | "chev-r" | "msg" | "globe" | "flag" | "bot";
+  | "logout" | "shield" | "trend" | "send" | "refresh" | "list" | "menu" | "download" | "eye" | "eye-off" | "x" | "chev-l" | "chev-r" | "msg" | "globe" | "flag" | "bot" | "note";
 
 export function Icon({ name, size, className }: { name: IconName; size?: number; className?: string }) {
   return (
@@ -58,6 +58,7 @@ export function IconSprite() {
         <symbol id="i-globe" viewBox="0 0 24 24" {...S}><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.5 2.6 3.5 5.5 3.5 8.5s-1 5.9-3.5 8.5c-2.5-2.6-3.5-5.5-3.5-8.5s1-5.9 3.5-8.5z" /></symbol>
         <symbol id="i-flag" viewBox="0 0 24 24" {...S}><path d="M5 21V4M5 4h11l-2 4 2 4H5" /></symbol>
         <symbol id="i-bot" viewBox="0 0 24 24" {...S}><rect x="4" y="4.5" width="16" height="15" rx="7.5" /><rect x="7" y="8.5" width="10" height="7" rx="3.5" /><path d="M10 12v.5M14 12v.5M2.5 11v3M21.5 11v3" /></symbol>
+        <symbol id="i-note" viewBox="0 0 24 24" {...S}><path d="M5 4h14v11l-5 5H5z" /><path d="M14 20v-5h5M8.5 9h7M8.5 12.5h4.5" /></symbol>
       </defs>
     </svg>
   );

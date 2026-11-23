@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { bizToday, BUSINESS_TZ, BUSINESS_TZ_LABEL, POST_STATUS } from "../lib/format";
 import { Button, LinkButton, LoadError, Modal, PageHead, Tag } from "../components/ui";
 import { Icon } from "../components/Icons";
+import { ExportMenu, postsDoc, type ExportablePost } from "../components/ExportImport";
 import "../styles/posts.css";
 
 interface P {
@@ -109,6 +110,25 @@ export function CalendarPage() {
       </Link>
     );
 
+  const gridRef = useRef<HTMLDivElement>(null);
+  const agendaRef = useRef<HTMLDivElement>(null);
+  // The month being viewed: its posts (full details) plus what the bots have planned, in date order.
+  const buildExport = async () => {
+    const monthStart = phMidnight(`${monthPrefix}-01`);
+    const next = new Date(Date.UTC(month.y, month.m + 1, 1)).toISOString().slice(0, 10);
+    const r = await api<{ posts: (ExportablePost & { id: number })[] }>("/posts", {
+      query: { from: monthStart, to: phMidnight(next), status: "draft,in_review,changes_requested,approved,scheduled,publishing,published,failed", limit: 500 },
+    });
+    const posts = r.posts
+      .filter((p) => (p.published_at ?? p.scheduled_at) && phDayOf((p.published_at ?? p.scheduled_at)!).startsWith(monthPrefix))
+      .sort((a, b) => (a.published_at ?? a.scheduled_at ?? "").localeCompare(b.published_at ?? b.scheduled_at ?? ""));
+    const planned = (bots.data?.items ?? [])
+      .filter((b) => phDayOf(b.scheduled_at).startsWith(monthPrefix))
+      .map((b) => ({ title: b.title, when: `${longDay(phDayOf(b.scheduled_at))} ${timeOf(b.scheduled_at)}`, note: `Not handed off yet${b.batch_name ? ` (batch: ${b.batch_name})` : ""}` }));
+    return postsDoc(posts, `Content calendar: ${monthLabel}`, `${posts.length} post${posts.length === 1 ? "" : "s"}${planned.length ? ` and ${planned.length} planned by bots` : ""} · ${BUSINESS_TZ_LABEL}`, `calendar-${monthPrefix}`, planned);
+  };
+  // The picture is of whichever view is showing: the month grid, or the agenda list on phones.
+  const pngTarget = () => (gridRef.current && gridRef.current.offsetParent ? gridRef.current : agendaRef.current);
   const openItems = openDay ? byDay.get(openDay) ?? [] : [];
   const agendaDays = days.filter((d) => d.startsWith(monthPrefix) && ((byDay.get(d)?.length ?? 0) > 0 || d === today));
 
@@ -133,6 +153,7 @@ export function CalendarPage() {
             <Button size="sm" variant="quiet" onClick={() => setMonth({ y: Number(today.slice(0, 4)), m: Number(today.slice(5, 7)) - 1 })}>
               This month
             </Button>
+            <ExportMenu build={buildExport} pngTarget={pngTarget} disabled={loading} />
             {can("posts.edit") && (
               <LinkButton to="/posts/new" variant="primary" icon="plus">
                 New post
@@ -155,7 +176,7 @@ export function CalendarPage() {
       </div>
 
       {/* Month grid (wider screens) */}
-      <div className={`pcal-grid ${loading ? "is-loading" : ""}`} aria-busy={loading || undefined}>
+      <div ref={gridRef} className={`pcal-grid ${loading ? "is-loading" : ""}`} aria-busy={loading || undefined}>
         {DOW.map((d) => (
           <div key={d} className="pcal-dow" aria-hidden="true">
             {d}
@@ -186,7 +207,7 @@ export function CalendarPage() {
       </div>
 
       {/* Agenda (small screens) */}
-      <div className="pcal-agenda" aria-busy={loading || undefined}>
+      <div ref={agendaRef} className="pcal-agenda" aria-busy={loading || undefined}>
         {firstLoad ? (
           <p className="muted">Loading…</p>
         ) : agendaDays.length ? (

@@ -328,7 +328,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .brand b { display: block; font-size: 13px; line-height: 1.25; font-weight: 600; }
 .brand span { font-size: 11.5px; color: var(--ink-3); }
 .nav-g { font-size: 12px; font-weight: 600; color: var(--ink-3); margin: 14px 10px 4px; }
-.nav a { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--r-pill); color: var(--ink-2); text-decoration: none; font-size: 13px; }
+.nav a { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 10px; color: var(--ink-2); text-decoration: none; font-size: 13px; white-space: nowrap; }
+.nav a > span { overflow: hidden; text-overflow: ellipsis; }
 .nav a svg { width: 16px; height: 16px; flex: none; }
 .nav a:hover { background: var(--side-hover); color: var(--ink); }
 .nav a[aria-current=page] { background: var(--mint); color: var(--ink); font-weight: 500; }

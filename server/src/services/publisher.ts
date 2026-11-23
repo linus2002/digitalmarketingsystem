@@ -2,6 +2,8 @@ import { env } from "../config/env.js";
 import { one, q, type Row } from "../lib/db.js";
 import { errMsg, log } from "../lib/logger.js";
 import { MetaError, publishToPage } from "./meta.js";
+import { BOT_NAMES, notify } from "./notifications.js";
+import { readMedia } from "./media.js";
 
 /** Minutes to wait before retry n (1-based): 1, 2, 4, 8, 16 … capped at 60. */
 export const backoffMinutes = (attempt: number) => Math.min(60, 2 ** Math.max(0, attempt - 1));
@@ -44,7 +46,15 @@ export async function publishOne(post: Row) {
       fbId = `dryrun_${post.id}_${Date.now()}`;
       raw = { dryRun: true };
     } else {
-      ({ id: fbId, raw } = await publishToPage({ message: composeMessage(post as { message: string; hashtags: string[] }), link: post.link_url, imageUrl: post.image_url, videoUrl: post.video_url }));
+      // An uploaded image/video is sent as a file; otherwise Facebook downloads it from the link.
+      const file = post.media_id ? await readMedia(post.media_id) : null;
+      ({ id: fbId, raw } = await publishToPage({
+        message: composeMessage(post as { message: string; hashtags: string[] }),
+        link: post.link_url,
+        imageUrl: file ? null : post.image_url,
+        videoUrl: file ? null : post.video_url,
+        file,
+      }));
     }
   } catch (err) {
     // Unknown errors (not from the Graph client) might have happened after sending: don't retry them.
@@ -63,6 +73,15 @@ export async function publishOne(post: Row) {
       await q(`UPDATE posts SET status='failed', attempts=$2, last_error=$3, next_attempt_at=NULL, updated_at=now() WHERE id=$1 AND status='publishing'`, [post.id, attempt, msg]);
       const why = err instanceof MetaError && err.uncertain ? "(not retried automatically)" : transient ? "(no retries left)" : "(not retryable)";
       await logAttempt(post.id, attempt, "error", `${msg} ${why}`, err instanceof MetaError ? err.raw : undefined);
+      const fromBots = String(post.source_topic ?? "").startsWith("Bots:");
+      await notify([post.created_by, post.approved_by], {
+        kind: "post.failed",
+        bot: fromBots ? "posting" : null,
+        level: "bad",
+        title: fromBots ? BOT_NAMES.posting : "A post failed to publish",
+        body: `"${post.title}" couldn't be published: ${msg}`,
+        link: `/posts/${post.id}`,
+      });
     }
     log.warn("Publish attempt failed", { postId: post.id, attempt, transient, error: msg });
     return;
@@ -85,6 +104,15 @@ export async function publishOne(post: Row) {
     log.error("Couldn't write publish log", { postId: post.id, error: errMsg(err) });
   }
   log.info("Post published", { postId: post.id, fbId, attempt });
+  const fromBots = String(post.source_topic ?? "").startsWith("Bots:");
+  await notify([post.created_by, post.approved_by], {
+    kind: "post.published",
+    bot: fromBots ? "posting" : null,
+    level: "good",
+    title: fromBots ? BOT_NAMES.posting : "Post published",
+    body: env.PUBLISH_DRY_RUN ? `"${post.title}" was marked published (Test mode: not sent to Facebook).` : `"${post.title}" is live on your Facebook Page.`,
+    link: `/posts/${post.id}`,
+  });
 }
 
 let running = false;

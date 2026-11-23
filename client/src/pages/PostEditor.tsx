@@ -6,6 +6,7 @@ import { ago, bizToday, BUSINESS_TZ_LABEL, fmtBiz, fmtDate, fmtNum, fromBizInput
 import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icons";
 import { Alert, Avatar, Button, ConfirmModal, LoadError, Modal, PageHead, SelectField, Skeleton, StatusTag, Steps, Tag, TextArea, TextField } from "../components/ui";
+import { MediaPreview, MediaUpload, type UploadedMedia } from "../components/MediaUpload";
 import "../styles/posts.css";
 
 // ---------------- Shared helpers for the posts pages ----------------
@@ -115,6 +116,10 @@ interface Post {
   hashtags: string[];
   image_url: string | null;
   video_url: string | null;
+  media_id?: number | null;
+  media_kind?: "image" | "video" | null;
+  media_name?: string | null;
+  media_size?: number | null;
   image_prompt: string | null;
   link_url: string | null;
   campaign_id: number | null;
@@ -145,9 +150,9 @@ interface Detail {
   preview: string;
 }
 
-type Form = { title: string; message: string; hashtags: string; image_url: string; video_url: string; image_prompt: string; link_url: string; campaign_id: string; planned: string };
+type Form = { title: string; message: string; hashtags: string; image_url: string; video_url: string; media: UploadedMedia | null; image_prompt: string; link_url: string; campaign_id: string; planned: string };
 
-const EMPTY: Form = { title: "", message: "", hashtags: "", image_url: "", video_url: "", image_prompt: "", link_url: "", campaign_id: "", planned: "" };
+const EMPTY: Form = { title: "", message: "", hashtags: "", image_url: "", video_url: "", media: null, image_prompt: "", link_url: "", campaign_id: "", planned: "" };
 const EDITABLE = ["draft", "changes_requested", "in_review", "approved", "scheduled", "failed"];
 /** Statuses where a content change sends the post back for approval (matches the server). */
 const RESETS_APPROVAL = ["approved", "scheduled", "in_review", "failed"];
@@ -175,6 +180,7 @@ function formFrom(post: Post): Form {
     hashtags: post.hashtags.join(" "),
     image_url: post.image_url ?? "",
     video_url: post.video_url ?? "",
+    media: post.media_id && post.media_kind ? { id: post.media_id, kind: post.media_kind, name: post.media_name ?? "Uploaded file", size: post.media_size ?? undefined } : null,
     image_prompt: post.image_prompt ?? "",
     link_url: post.link_url ?? "",
     campaign_id: post.campaign_id ? String(post.campaign_id) : "",
@@ -199,6 +205,7 @@ export function PostEditorPage() {
   const campaigns = useLoad(() => api<{ campaigns: { id: number; name: string; status: string }[] }>("/campaigns"), []);
 
   const [form, setForm] = useState<Form>(EMPTY);
+  const [showLinks, setShowLinks] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [check, setCheck] = useState<{ issues: string[]; hasDisclaimer: boolean; disclaimer: string } | null>(null);
@@ -296,8 +303,9 @@ export function PostEditorPage() {
     title: form.title.trim(),
     message: form.message,
     hashtags: splitTags(form.hashtags),
-    image_url: form.image_url.trim() || null,
-    video_url: form.video_url.trim() || null,
+    image_url: form.media ? null : form.image_url.trim() || null,
+    video_url: form.media ? null : form.video_url.trim() || null,
+    media_id: form.media?.id ?? null,
     image_prompt: form.image_prompt.trim() || null,
     link_url: form.link_url.trim() || null,
     campaign_id: form.campaign_id ? Number(form.campaign_id) : null,
@@ -400,7 +408,7 @@ export function PostEditorPage() {
 
   const imageErr = editable ? mediaProblem("image", form.image_url) : null;
   const videoErr = editable ? mediaProblem("video", form.video_url) : null;
-  const bothMedia = !!form.image_url.trim() && !!form.video_url.trim();
+  const bothMedia = [form.media, form.image_url.trim(), form.video_url.trim()].filter(Boolean).length > 1;
   const plannedErr = form.planned && !fromBizInput(form.planned) ? "Pick a valid date and time." : null;
   const valid = !!form.title.trim() && !!form.message.trim() && !imageErr && !videoErr && !bothMedia && !plannedErr;
 
@@ -412,6 +420,7 @@ export function PostEditorPage() {
       JSON.stringify(splitTags(form.hashtags)) !== JSON.stringify(post.hashtags) ||
       (form.image_url.trim() || null) !== (post.image_url ?? null) ||
       (form.video_url.trim() || null) !== (post.video_url ?? null) ||
+      (form.media?.id ?? null) !== (post.media_id ?? null) ||
       (form.link_url.trim() || null) !== (post.link_url ?? null));
 
   const preview = composePreview(form.message, splitTags(form.hashtags));
@@ -503,6 +512,22 @@ export function PostEditorPage() {
                 No banned phrases, dosing or pressure wording found.
               </Alert>
             )}
+            <MediaUpload
+              value={form.media}
+              disabled={!editable}
+              onChange={(m) => {
+                // An upload replaces any image or video link.
+                setForm((f) => ({ ...f, media: m, ...(m ? { image_url: "", video_url: "" } : {}) }));
+                setDirty(true);
+              }}
+            />
+            {!form.media && !showLinks && !form.image_url && !form.video_url && editable && (
+              <button type="button" className="linkish link-toggle" onClick={() => setShowLinks(true)}>
+                Or use a link to an image or video that's already online
+              </button>
+            )}
+            {!form.media && (showLinks || !!form.image_url || !!form.video_url) && (
+            <>
             <div className="grid g2">
               <TextField
                 label="Image URL"
@@ -514,7 +539,6 @@ export function PostEditorPage() {
                 error={imageErr}
                 hint="Posts with an image are published as a photo post."
               />
-              <TextField label="Link" optional value={form.link_url} onChange={set("link_url")} disabled={!editable} placeholder="https://…" />
             </div>
             <TextField
               label="Video URL"
@@ -526,10 +550,13 @@ export function PostEditorPage() {
               error={videoErr}
               hint="Posts with a video are published as a video post. Facebook downloads it from this link."
             />
+            </>
+            )}
+            <TextField label="Link" optional value={form.link_url} onChange={set("link_url")} disabled={!editable} placeholder="https://…" hint="Shown as a link preview when the post has no image or video." />
             {bothMedia && (
               <Alert tone={editable ? "bad" : "warn"} title="Use either an image or a video">
                 {editable
-                  ? "A post can have an image or a video, not both. Clear one of the two links before saving."
+                  ? "A post can have one image or one video. Remove the upload or clear the links before saving."
                   : "This post has both. The video is what gets published; the image is ignored."}
               </Alert>
             )}
@@ -574,7 +601,9 @@ export function PostEditorPage() {
               <p className="pre" style={{ margin: "12px 0", fontSize: 14, overflowWrap: "anywhere" }}>
                 {preview || <span className="muted">Your text appears here.</span>}
               </p>
-              {videoUrl ? (
+              {form.media ? (
+                <MediaPreview media={form.media} />
+              ) : videoUrl ? (
                 !mediaProblem("video", videoUrl) && !videoBroken ? (
                   <video className="pe-video" src={videoUrl} controls preload="metadata" onError={() => setVideoBroken(true)} />
                 ) : (
