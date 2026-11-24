@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { useToast } from "../components/Toast";
 import { ago, bizToday, BUSINESS_TZ_LABEL, fmtBiz, POST_STATUS } from "../lib/format";
 import { ExportMenu, ImportModal, postsDoc, type ExportablePost } from "../components/ExportImport";
 import { Button, Empty, LinkButton, LoadError, PageHead, SearchInput, Skeleton, StatusTag, Tabs, Tag } from "../components/ui";
@@ -34,6 +35,8 @@ const VIEWS = {
 } as const;
 type View = keyof typeof VIEWS;
 const VIEW_KEYS = Object.keys(VIEWS) as View[];
+/** Posts loaded at a time; "Show more" loads the next page. */
+const PAGE = 100;
 
 /**
  * `?status=` accepts a tab name (drafts, review, …) or post statuses (failed, in_review, "draft,changes_requested").
@@ -55,8 +58,11 @@ function resolveFilter(raw: string | null): { view: View | null; statuses: strin
 
 export function PostsPage() {
   const { can } = useAuth();
+  const toast = useToast();
   const [params, setParams] = useSearchParams();
   const filter = resolveFilter(params.get("status"));
+  /** ?for=me (from the "waiting for your approval" badge): only posts this person may approve. */
+  const forMe = params.get("for") === "me" ? "me" : undefined;
   const q = params.get("q") ?? "";
   const [search, setSearch] = useState(q);
 
@@ -86,18 +92,49 @@ export function PostsPage() {
       const n = new URLSearchParams(p);
       if (v === "all") n.delete("status");
       else n.set("status", v);
+      n.delete("for");
+      return n;
+    });
+  const showAllInTab = () =>
+    setParams((p) => {
+      const n = new URLSearchParams(p);
+      n.delete("for");
       return n;
     });
 
   const counts = useLoad(() => api<{ counts: Record<string, number> }>("/posts/counts"), []);
-  const filterKey = `${filter.statuses}|${q}`;
+  const filterKey = `${filter.statuses}|${q}|${forMe ?? ""}`;
   const { data, error, loading, reload } = useLoad(
-    () => api<{ posts: PostRow[] }>("/posts", { query: { status: filter.statuses, q } }).then((r) => ({ key: filterKey, posts: r.posts })),
+    () =>
+      api<{ posts: PostRow[]; hasMore?: boolean }>("/posts", { query: { status: filter.statuses, q, for: forMe, limit: PAGE } }).then((r) => ({
+        key: filterKey,
+        posts: r.posts,
+        hasMore: !!r.hasMore,
+      })),
     [filterKey],
   );
+  /** Further pages from "Show more", kept only for the first page they continue (a new tab, search or reload starts over). */
+  const [more, setMore] = useState<{ base: unknown; posts: PostRow[]; hasMore: boolean } | null>(null);
+  const [moreBusy, setMoreBusy] = useState(false);
+  const extra = more && more.base === data ? more : null;
   // Rows from a different tab are never shown while the new tab loads; a new search on the same tab just dims them.
   const sameTab = data?.key.split("|")[0] === filter.statuses;
-  const rows = data && sameTab ? data.posts : null;
+  const rows = data && sameTab ? (extra ? [...data.posts, ...extra.posts] : data.posts) : null;
+  const hasMore = extra ? extra.hasMore : !!data?.hasMore;
+  const showMore = async () => {
+    if (!data || !rows) return;
+    setMoreBusy(true);
+    try {
+      const r = await api<{ posts: PostRow[]; hasMore?: boolean }>("/posts", { query: { status: filter.statuses, q, for: forMe, limit: PAGE, offset: rows.length } });
+      // Skip any post already listed (the order can shift if someone edits a post meanwhile).
+      const seen = new Set(rows.map((p) => p.id));
+      setMore({ base: data, posts: [...(extra?.posts ?? []), ...r.posts.filter((p) => !seen.has(p.id))], hasMore: !!r.hasMore });
+    } catch (e) {
+      toast.err("Couldn't load more posts", (e as Error).message);
+    } finally {
+      setMoreBusy(false);
+    }
+  };
 
   const c = counts.data?.counts ?? {};
   const n = (statuses: string) => (statuses ? statuses.split(",").reduce((s, k) => s + (c[k] ?? 0), 0) : Object.values(c).reduce((s, v) => s + v, 0));
@@ -107,7 +144,7 @@ export function PostsPage() {
   const viewLabel = filter.view ? VIEWS[filter.view].label : "Filtered";
   // Exports everything matching the current tab and search (up to 500), not just what fits on screen.
   const buildExport = async () => {
-    const r = await api<{ posts: ExportablePost[] }>("/posts", { query: { status: filter.statuses, q, limit: 500 } });
+    const r = await api<{ posts: ExportablePost[] }>("/posts", { query: { status: filter.statuses, q, for: forMe, limit: 500 } });
     const sub = `${viewLabel} posts${q ? ` matching "${q}"` : ""} · ${r.posts.length} post${r.posts.length === 1 ? "" : "s"} · exported ${fmtBiz(new Date().toISOString())} (${BUSINESS_TZ_LABEL})`;
     return postsDoc(r.posts, "Posts", sub, `posts-${(filter.view ?? "filtered").toLowerCase()}-${bizToday()}`);
   };
@@ -152,6 +189,14 @@ export function PostsPage() {
               <Tag tone="outline">Showing: {customLabel}</Tag>
               <Button size="sm" variant="quiet" onClick={() => setView("all")}>
                 Show all
+              </Button>
+            </span>
+          )}
+          {forMe && (
+            <span className="row" style={{ gap: 6 }}>
+              <Tag tone="outline">Only posts you can approve</Tag>
+              <Button size="sm" variant="quiet" onClick={showAllInTab}>
+                Show everyone's
               </Button>
             </span>
           )}
@@ -206,6 +251,18 @@ export function PostsPage() {
                 ))}
               </tbody>
             </table>
+            <div className="spread" style={{ padding: "12px 16px" }}>
+              <span className="note mt0">
+                Showing {rows.length}
+                {!q && !forMe && filter.view && n(filter.statuses) > rows.length ? ` of ${n(filter.statuses)}` : ""} post
+                {rows.length === 1 && (q || forMe || !(n(filter.statuses) > 1)) ? "" : "s"}
+              </span>
+              {hasMore && (
+                <Button size="sm" variant="secondary" loading={moreBusy} disabled={loading} onClick={() => void showMore()}>
+                  Show more
+                </Button>
+              )}
+            </div>
           </div>
         ) : (
           <Empty title={q ? "No posts match your search" : "No posts here"} action={can("posts.edit") && !q ? <LinkButton to="/posts/new" variant="primary" size="sm" icon="plus">New post</LinkButton> : undefined}>

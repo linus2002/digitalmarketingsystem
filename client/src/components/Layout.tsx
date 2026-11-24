@@ -238,7 +238,7 @@ export function Layout() {
           icon: "doc",
           perm: "posts.view",
           count: counts.review,
-          countTo: "/posts?status=in_review",
+          countTo: "/posts?status=in_review&for=me",
           countLabel: "waiting for your approval",
         },
       ],

@@ -186,9 +186,12 @@ leadsRouter.get("/stats", requirePerm("leads.view"), async (req, res) => {
   const [stats] = await q(
     `SELECT count(*) FILTER (WHERE status IN ('new','in_progress','waiting_customer'))::int AS open,
             count(*) FILTER (WHERE status='new')::int AS new,
-            count(*) FILTER (WHERE needs_review AND status <> 'closed' AND anonymized_at IS NULL)::int AS needs_review,
+            -- Same rows as the list views they link to (filter=review, filter=followups), so the numbers match.
+            count(*) FILTER (WHERE (needs_review OR EXISTS (SELECT 1 FROM lead_messages m WHERE m.lead_id=l.id AND m.status='pending_review'))
+                             AND status <> 'closed' AND anonymized_at IS NULL)::int AS needs_review,
             count(*) FILTER (WHERE assigned_to IS NULL AND status IN ('new','in_progress','waiting_customer'))::int AS unassigned,
-            count(*) FILTER (WHERE follow_up_at < now() AND status IN ('new','in_progress','waiting_customer'))::int AS overdue,
+            count(*) FILTER (WHERE follow_up_at IS NOT NULL AND follow_up_at < now() + interval '1 day' AND status NOT IN ('closed','opted_out'))::int AS followups,
+            count(*) FILTER (WHERE follow_up_at < now() AND status NOT IN ('closed','opted_out'))::int AS overdue,
             count(*) FILTER (WHERE created_at > now() - interval '7 days' AND consent_given)::int AS this_week
      FROM leads l WHERE ${scopeSql(req, a.p)}`,
     a.list,

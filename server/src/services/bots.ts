@@ -138,13 +138,22 @@ export function daySlots(r: ScheduleRules): string[] {
   return [...new Set(Array.from({ length: n }, (_, i) => fromMin(clamp(Math.round((start + i * step) / 5) * 5))))];
 }
 
-/** Every post already booked (including ones this batch handed off), so new times don't clash with them. */
-async function bookedTimes(): Promise<{ at: Date; label: string }[]> {
-  const rows = await q<{ scheduled_at: Date; title: string }>(
-    `SELECT p.scheduled_at, p.title FROM posts p
-     WHERE p.scheduled_at > now() - interval '1 day' AND p.status IN ('in_review','approved','scheduled','publishing')`,
+/**
+ * Every time already taken, so new times don't clash: posts already booked (including ones this batch handed off)
+ * and times other batches have planned but not handed off yet.
+ */
+async function bookedTimes(batchId: number): Promise<{ at: Date; label: string }[]> {
+  const rows = await q<{ scheduled_at: Date; label: string }>(
+    `SELECT p.scheduled_at, 'the post "' || p.title || '"' AS label FROM posts p
+     WHERE p.scheduled_at > now() - interval '1 day' AND p.status IN ('in_review','approved','scheduled','publishing')
+     UNION ALL
+     SELECT i.scheduled_at, '"' || COALESCE(NULLIF(i.title, ''), 'post ' || i.position) || '" in the batch "' || b.name || '"' AS label
+     FROM bot_items i JOIN bot_batches b ON b.id = i.batch_id
+     WHERE i.batch_id <> $1 AND i.post_id IS NULL AND i.handed_off_at IS NULL
+       AND i.scheduled_at > now() - interval '1 day'`,
+    [batchId],
   );
-  return rows.map((r) => ({ at: new Date(r.scheduled_at), label: `the post "${r.title}"` }));
+  return rows.map((r) => ({ at: new Date(r.scheduled_at), label: r.label }));
 }
 
 // ---------------------------------------------------------------- batch loading
@@ -322,7 +331,7 @@ export async function scheduleBatch(batchId: number, userId: number | null) {
   const r = scheduleOf(batch);
   const todo = pending(items);
   const gap = Math.max(0, r.minGapMinutes) * 60_000;
-  const taken: Date[] = [...(await bookedTimes()).map((b) => b.at), ...todo.filter((i) => i.time_locked && i.scheduled_at).map((i) => new Date(i.scheduled_at))];
+  const taken: Date[] = [...(await bookedTimes(batchId)).map((b) => b.at), ...todo.filter((i) => i.time_locked && i.scheduled_at).map((i) => new Date(i.scheduled_at))];
   const free = todo.filter((i) => !i.time_locked);
   const slots = daySlots(r);
   const earliest = Date.now() + 15 * 60_000;
@@ -400,7 +409,7 @@ export async function checkBatch(batchId: number, userId: number | null) {
   const brand = await getBrand();
   const rules = await getRules();
   const todo = pending(items);
-  const booked = await bookedTimes();
+  const booked = await bookedTimes(batchId);
   const gapMs = r.minGapMinutes * 60_000;
   let bad = 0;
   let warn = 0;
