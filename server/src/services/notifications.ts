@@ -11,6 +11,7 @@ export const BOT_NAMES = {
   scheduler: "Scheduler Bot",
   checker: "Checker Bot",
   posting: "Posting Bot",
+  editor: "Editor Bot",
 } as const;
 export type NotifyBot = keyof typeof BOT_NAMES;
 

@@ -106,6 +106,8 @@ async function processInbound(ev: InboundEvent) {
   if (OPT_OUT.test(text)) {
     await setState(lead.id, { status: "opted_out", opted_out_at: new Date(), bot_state: "opted_out", follow_up_at: null });
     await q("INSERT INTO consent_records (lead_id, action, consent_version, channel) VALUES ($1,'withdrawn',$2,'messenger')", [lead.id, fresh.consent_version]);
+    // Replies waiting for approval must never go out now.
+    await q("UPDATE lead_messages SET status='blocked', error='The person opted out before this was approved.' WHERE lead_id=$1 AND status='pending_review'", [lead.id]);
     await addActivity(lead.id, "consent", "Opted out of messages (STOP)");
     await say(await reload(lead.id), "bot.optout", undefined, { systemAck: true });
     return;
@@ -117,8 +119,9 @@ async function processInbound(ev: InboundEvent) {
     return;
   }
   if (isOptedOut(fresh)) {
-    // They messaged again after opting out: treat it as starting over, with consent asked again.
-    await setState(lead.id, { status: "awaiting_consent", bot_state: "consent", opted_out_at: null });
+    // They messaged again after opting out: treat it as starting over, with consent asked again. The earlier consent
+    // was withdrawn, so it no longer counts until they agree again.
+    await setState(lead.id, { status: "awaiting_consent", bot_state: "consent", opted_out_at: null, consent_given: false, consent_at: null });
     await say(await reload(lead.id), "bot.consent", CONSENT_REPLIES);
     return;
   }
@@ -145,7 +148,7 @@ async function processInbound(ev: InboundEvent) {
       await q("INSERT INTO consent_records (lead_id, action, consent_version, channel) VALUES ($1,'declined',$2,'messenger')", [lead.id, consent.version]);
       // Keep nothing they wrote; the empty record is deleted by the retention job.
       await q("UPDATE lead_messages SET body_enc=NULL WHERE lead_id=$1", [lead.id]);
-      await setState(lead.id, { status: "closed", bot_state: "declined", closed_at: new Date() });
+      await setState(lead.id, { status: "closed", bot_state: "declined", closed_at: new Date(), consent_given: false, consent_at: null });
       await say(await reload(lead.id), "bot.declined");
     } else {
       await say(fresh, "bot.consent_reask", CONSENT_REPLIES);
@@ -155,7 +158,7 @@ async function processInbound(ev: InboundEvent) {
 
   if (state === "declined") {
     // A new message after declining: ask again (it's a new conversation from their side).
-    await setState(lead.id, { status: "awaiting_consent", bot_state: "consent", closed_at: null });
+    await setState(lead.id, { status: "awaiting_consent", bot_state: "consent", closed_at: null, consent_given: false, consent_at: null });
     await say(await reload(lead.id), "bot.consent", CONSENT_REPLIES);
     return;
   }

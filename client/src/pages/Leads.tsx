@@ -28,7 +28,7 @@ interface LeadRow {
   pending_reviews: number;
 }
 interface Stats {
-  stats: { open: number; new: number; needs_review: number; unassigned: number; overdue: number; this_week: number; pending_replies: number };
+  stats: { open: number; new: number; needs_review: number; unassigned: number; followups: number; overdue: number; this_week: number; pending_replies: number };
   byCategory: { category: string; label: string; n: number }[];
   categories: { value: string; label: string }[];
 }
@@ -103,16 +103,16 @@ export function LeadsPage() {
           <KpiCard strong title="Open" sub={`${s.this_week} new this week`} value={s.open} note={`${s.new} not picked up yet`} to={viewLink("all")} />
           <KpiCard
             title="Needs pharmaceutical review"
-            sub="Inquiries and drafted replies"
-            value={s.needs_review + s.pending_replies}
-            tag={s.pending_replies ? <Tag tone="warn" dot>{s.pending_replies} replies waiting approval</Tag> : undefined}
+            sub="Flagged inquiries, or with a reply waiting approval"
+            value={s.needs_review}
+            tag={s.pending_replies ? <Tag tone="warn" dot>{s.pending_replies} {s.pending_replies === 1 ? "reply" : "replies"} waiting approval</Tag> : undefined}
             to={viewLink("review")}
           />
           <KpiCard
-            title="Follow-ups overdue"
-            sub="Past their follow-up date"
-            value={s.overdue}
-            tag={s.overdue ? <Tag tone="bad" dot>Overdue</Tag> : <Tag tone="good" dot>On track</Tag>}
+            title="Follow-ups due"
+            sub="Overdue, or due in the next 24 hours"
+            value={s.followups}
+            tag={s.overdue ? <Tag tone="bad" dot>{s.overdue} overdue</Tag> : <Tag tone="good" dot>None overdue</Tag>}
             to={viewLink("followups")}
           />
           <KpiCard title="Unassigned" sub="Open, with no owner yet" value={s.unassigned} to={viewLink("unassigned")} />

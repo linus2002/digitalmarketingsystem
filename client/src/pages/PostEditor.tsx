@@ -7,6 +7,8 @@ import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icons";
 import { Alert, Avatar, Button, ConfirmModal, LoadError, Modal, PageHead, SelectField, Skeleton, StatusTag, Steps, Tag, TextArea, TextField } from "../components/ui";
 import { MediaPreview, MediaUpload, type UploadedMedia } from "../components/MediaUpload";
+import { RevisionModal } from "../components/EditorBot";
+import { LeaveGuard } from "../components/LeaveGuard";
 import "../styles/posts.css";
 
 // ---------------- Shared helpers for the posts pages ----------------
@@ -206,6 +208,7 @@ export function PostEditorPage() {
 
   const [form, setForm] = useState<Form>(EMPTY);
   const [showLinks, setShowLinks] = useState(false);
+  const [revising, setRevising] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [check, setCheck] = useState<{ issues: string[]; hasDisclaimer: boolean; disclaimer: string } | null>(null);
@@ -265,32 +268,6 @@ export function PostEditorPage() {
     }, 600);
     return () => clearTimeout(t);
   }, [form.title, form.message]);
-
-  // Unsaved-changes protection: closing/reloading the tab, and any in-app link click (sidebar, breadcrumb…).
-  useEffect(() => {
-    if (!dirty) return;
-    const onUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    const onClick = (e: MouseEvent) => {
-      if (!dirtyRef.current || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      const a = (e.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
-      if (!a || a.target === "_blank" || a.hasAttribute("download")) return;
-      const url = new URL(a.href, window.location.href);
-      if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
-      if (!window.confirm(LEAVE_MSG)) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    };
-    window.addEventListener("beforeunload", onUnload);
-    document.addEventListener("click", onClick, true);
-    return () => {
-      window.removeEventListener("beforeunload", onUnload);
-      document.removeEventListener("click", onClick, true);
-    };
-  }, [dirty]);
 
   useEffect(() => setVideoBroken(false), [form.video_url]);
 
@@ -430,6 +407,7 @@ export function PostEditorPage() {
 
   return (
     <>
+      <LeaveGuard when={() => dirtyRef.current} message={LEAVE_MSG} />
       <PageHead
         crumbs={[{ to: back.to, label: back.label }, { label: isNew ? "New post" : post?.title ?? "" }]}
         title={isNew ? "New post" : post?.title}
@@ -483,6 +461,25 @@ export function PostEditorPage() {
               hint={`${form.message.length} characters`}
               placeholder="What do you want to say?"
             />
+            {editable && can("content.generate") && (
+              <div className="row" style={{ marginTop: -6 }}>
+                <Button size="sm" variant="soft" icon="spark" disabled={!form.message.trim()} onClick={() => setRevising(true)}>
+                  Revise with Editor Bot
+                </Button>
+                <span className="note mt0">Checks the text against your standards and suggests a revision.</span>
+              </div>
+            )}
+            {revising && (
+              <RevisionModal
+                text={form.message}
+                postId={post?.id ?? null}
+                onAccept={(t) => {
+                  setForm((f) => ({ ...f, message: t }));
+                  setDirty(true);
+                }}
+                onClose={() => setRevising(false)}
+              />
+            )}
             <TextField label="Hashtags" optional value={form.hashtags} onChange={set("hashtags")} disabled={!editable} placeholder="#CancerAwareness #GetMeds" hint="Separate with spaces. They're added at the end unless already in the text." />
             {check && (check.issues.length > 0 || !check.hasDisclaimer) && (
               <Alert tone="warn" title="Brand and compliance check">

@@ -56,7 +56,8 @@ function paramList() {
  */
 function scopeSql(req: Request, p: P): string {
   const base = "l.status NOT IN ('awaiting_consent','collecting')";
-  if (userCan(req, "leads.view_all")) return base;
+  // A deletion request has to be acted on even if it arrives while the assistant is asking for consent again.
+  if (userCan(req, "leads.view_all")) return `(${base} OR l.category = 'privacy_request')`;
   const me = p(req.user!.id);
   return `${base} AND (l.assigned_to = ${me} OR (l.assigned_to IS NULL AND l.consent_given AND NOT l.needs_review))`;
 }
@@ -75,15 +76,32 @@ const canReveal = (req: Request, lead: Row) => userCan(req, "leads.view_all") ||
 /** Masks emails and phone numbers inside free text the way the contact fields are masked. */
 const maskText = (t: string) => redactContactData(t, { email: (v) => maskEmail(v) ?? "•••", phone: (v) => maskPhone(v) ?? "•••" });
 
-function messageBody(m: Row, reveal: boolean): { body: string | null; masked: boolean } {
+/** Hides the person's name (full, and each part of it) inside free text. Sent replies have {{name}} already filled in. */
+function maskNameIn(t: string, name: string | null): string {
+  if (!name) return t;
+  const parts = [name.trim(), ...name.split(/\s+/)].filter((x) => x.length >= 2).sort((a, b) => b.length - a.length);
+  if (!parts.length) return t;
+  const alts = parts.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const re = new RegExp(String.raw`(?<![\p{L}\p{N}])(?:` + alts + String.raw`)(?![\p{L}\p{N}])`, "giu");
+  return t.replace(re, "•••");
+}
+
+/** A message as this viewer may see it. Without reveal, contact details and the person's name are hidden in both directions. */
+function messageBody(m: Row, reveal: boolean, name: string | null): { body: string | null; masked: boolean } {
   const body = safeDecrypt(m.body_enc);
-  if (reveal || body == null || m.direction !== "in") return { body, masked: false };
-  if (m.contains_contact) {
-    const masked = maskText(body);
-    return { body: masked !== body ? masked : "[Contact details hidden]", masked: true };
-  }
-  const masked = maskText(body);
+  if (reveal || body == null) return { body, masked: false };
+  const masked = maskNameIn(maskText(body), name);
+  if (m.direction === "in" && m.contains_contact && masked === body) return { body: "[Contact details hidden]", masked: true };
   return { body: masked, masked: masked !== body };
+}
+
+/**
+ * Without leads.view_all, people act only on inquiries assigned to them (claiming an unassigned one first),
+ * so nobody replies to, opts out or edits a claim-queue inquiry they haven't taken.
+ */
+function assertOwner(req: Request, lead: Row) {
+  if (userCan(req, "leads.view_all") || lead.assigned_to === req.user!.id) return;
+  throw forbidden("Assign this inquiry to yourself first.");
 }
 
 function summarise(l: Row, reveal: boolean) {
@@ -168,9 +186,12 @@ leadsRouter.get("/stats", requirePerm("leads.view"), async (req, res) => {
   const [stats] = await q(
     `SELECT count(*) FILTER (WHERE status IN ('new','in_progress','waiting_customer'))::int AS open,
             count(*) FILTER (WHERE status='new')::int AS new,
-            count(*) FILTER (WHERE needs_review AND status <> 'closed' AND anonymized_at IS NULL)::int AS needs_review,
+            -- Same rows as the list views they link to (filter=review, filter=followups), so the numbers match.
+            count(*) FILTER (WHERE (needs_review OR EXISTS (SELECT 1 FROM lead_messages m WHERE m.lead_id=l.id AND m.status='pending_review'))
+                             AND status <> 'closed' AND anonymized_at IS NULL)::int AS needs_review,
             count(*) FILTER (WHERE assigned_to IS NULL AND status IN ('new','in_progress','waiting_customer'))::int AS unassigned,
-            count(*) FILTER (WHERE follow_up_at < now() AND status IN ('new','in_progress','waiting_customer'))::int AS overdue,
+            count(*) FILTER (WHERE follow_up_at IS NOT NULL AND follow_up_at < now() + interval '1 day' AND status NOT IN ('closed','opted_out'))::int AS followups,
+            count(*) FILTER (WHERE follow_up_at < now() AND status NOT IN ('closed','opted_out'))::int AS overdue,
             count(*) FILTER (WHERE created_at > now() - interval '7 days' AND consent_given)::int AS this_week
      FROM leads l WHERE ${scopeSql(req, a.p)}`,
     a.list,
@@ -212,9 +233,10 @@ leadsRouter.get("/:id", requirePerm("leads.view"), async (req, res) => {
   const activities = activitiesDesc.slice(0, MAX_THREAD);
   const window = lead.source === "messenger" ? messengerWindow(lead, true) : null;
   const inquiry = safeDecrypt(lead.inquiry_enc);
+  const name = safeDecrypt(lead.name_enc);
   res.json({
-    lead: { ...summarise(lead, reveal), inquiry: inquiry && !reveal ? maskText(inquiry) : inquiry },
-    messages: messages.map(({ body_enc, ...m }) => ({ ...m, ...messageBody({ ...m, body_enc }, reveal) })),
+    lead: { ...summarise(lead, reveal), inquiry: inquiry && !reveal ? maskNameIn(maskText(inquiry), name) : inquiry },
+    messages: messages.map(({ body_enc, ...m }) => ({ ...m, ...messageBody({ ...m, body_enc }, reveal, name) })),
     activities,
     consents,
     truncated: { messages: messagesDesc.length > MAX_THREAD, activities: activitiesDesc.length > MAX_THREAD },
@@ -247,6 +269,8 @@ leadsRouter.patch("/:id", requirePerm("leads.manage"), async (req, res) => {
   const lead = await loadLead(req, id);
   const b = parse(updateSchema, req.body);
   if (lead.anonymized_at) throw conflict("This inquiry has been anonymised, so it can't be changed.");
+  // Claiming an unassigned inquiry (and changing it in the same save) is allowed; anything else needs ownership.
+  if (!(lead.assigned_to == null && b.assigned_to === req.user!.id)) assertOwner(req, lead);
   if (b.needs_review === false && !userCan(req, "leads.review")) throw forbidden("Only the pharmaceutical team can clear a review flag.");
   if (b.assigned_to !== undefined && b.assigned_to !== null && b.assigned_to !== lead.assigned_to) {
     if (b.assigned_to !== req.user!.id && !userCan(req, "leads.view_all")) throw forbidden("You can only assign inquiries to yourself.");
@@ -305,6 +329,7 @@ leadsRouter.patch("/:id", requirePerm("leads.manage"), async (req, res) => {
 leadsRouter.post("/:id/notes", requirePerm("leads.manage"), async (req, res) => {
   const id = intParam(req.params.id);
   const lead = await loadLead(req, id);
+  assertOwner(req, lead);
   if (lead.anonymized_at) throw conflict("This inquiry has been anonymised.");
   const { note } = parse(z.object({ note: z.string().trim().min(1).max(2000) }), req.body);
   await addActivity(id, "note", note, req.user!.id);
@@ -315,6 +340,7 @@ leadsRouter.post("/:id/notes", requirePerm("leads.manage"), async (req, res) => 
 leadsRouter.post("/:id/messages", requirePerm("leads.reply"), async (req, res) => {
   const id = intParam(req.params.id);
   const lead = await loadLead(req, id);
+  assertOwner(req, lead);
   const b = parse(z.object({ body: z.string().trim().min(1).max(2000), templateId: z.number().int().nullable().optional() }), req.body);
   if (lead.anonymized_at) throw conflict("This inquiry has been anonymised.");
   if (isOptedOut(lead)) throw conflict("This person opted out of messages.");
@@ -393,6 +419,7 @@ leadsRouter.post("/:id/messages/:mid/reject", requirePerm("leads.review"), async
 leadsRouter.post("/:id/suggest", requirePerm("leads.reply"), async (req, res) => {
   const id = intParam(req.params.id);
   const lead = await loadLead(req, id);
+  assertOwner(req, lead);
   if (!aiAllowedForInquiries())
     throw new HttpError(403, "AI reply suggestions are off, so inquiry text isn't sent to the cloud AI. An administrator can turn them on with AI_FOR_INQUIRIES=true in .env.");
   const templates = await q("SELECT id, name, category, body FROM response_templates WHERE status='approved' AND key IS NULL ORDER BY category, name");
@@ -422,7 +449,7 @@ leadsRouter.post("/:id/suggest", requirePerm("leads.reply"), async (req, res) =>
 
 leadsRouter.post("/:id/reclassify", requirePerm("leads.manage"), async (req, res) => {
   const id = intParam(req.params.id);
-  await loadLead(req, id);
+  assertOwner(req, await loadLead(req, id));
   res.json({ result: await reclassifyLead(id, true) });
 });
 

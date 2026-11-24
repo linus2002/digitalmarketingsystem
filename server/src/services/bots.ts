@@ -6,6 +6,7 @@ import { errMsg, log } from "../lib/logger.js";
 import { getBrand, getSetting, setSetting, type BrandSettings } from "../lib/settings.js";
 import { chatJson } from "./ai.js";
 import { BOT_NAMES, notify, usersWithPerm } from "./notifications.js";
+import { evaluate, getStandards, meetsStandards, revise } from "./editor.js";
 
 /**
  * Small local models sometimes get stuck repeating themselves (Ollama aborts with "token repeat limit reached")
@@ -32,7 +33,7 @@ import { composeMessage } from "./publisher.js";
 //   Checker Bot   checks everything before hand-off, and tracks the posts afterwards
 //   Posting Bot   turns the batch into real posts in the approval workflow (or, for an admin, scheduled posts)
 
-export type BotName = "caption" | "style" | "scheduler" | "checker" | "posting";
+export type BotName = "caption" | "style" | "scheduler" | "checker" | "posting" | "editor";
 
 // ---------------------------------------------------------------- settings
 
@@ -137,13 +138,22 @@ export function daySlots(r: ScheduleRules): string[] {
   return [...new Set(Array.from({ length: n }, (_, i) => fromMin(clamp(Math.round((start + i * step) / 5) * 5))))];
 }
 
-/** Every post already booked (including ones this batch handed off), so new times don't clash with them. */
-async function bookedTimes(): Promise<{ at: Date; label: string }[]> {
-  const rows = await q<{ scheduled_at: Date; title: string }>(
-    `SELECT p.scheduled_at, p.title FROM posts p
-     WHERE p.scheduled_at > now() - interval '1 day' AND p.status IN ('in_review','approved','scheduled','publishing')`,
+/**
+ * Every time already taken, so new times don't clash: posts already booked (including ones this batch handed off)
+ * and times other batches have planned but not handed off yet.
+ */
+async function bookedTimes(batchId: number): Promise<{ at: Date; label: string }[]> {
+  const rows = await q<{ scheduled_at: Date; label: string }>(
+    `SELECT p.scheduled_at, 'the post "' || p.title || '"' AS label FROM posts p
+     WHERE p.scheduled_at > now() - interval '1 day' AND p.status IN ('in_review','approved','scheduled','publishing')
+     UNION ALL
+     SELECT i.scheduled_at, '"' || COALESCE(NULLIF(i.title, ''), 'post ' || i.position) || '" in the batch "' || b.name || '"' AS label
+     FROM bot_items i JOIN bot_batches b ON b.id = i.batch_id
+     WHERE i.batch_id <> $1 AND i.post_id IS NULL AND i.handed_off_at IS NULL
+       AND i.scheduled_at > now() - interval '1 day'`,
+    [batchId],
   );
-  return rows.map((r) => ({ at: new Date(r.scheduled_at), label: `the post "${r.title}"` }));
+  return rows.map((r) => ({ at: new Date(r.scheduled_at), label: r.label }));
 }
 
 // ---------------------------------------------------------------- batch loading
@@ -156,7 +166,8 @@ export async function loadBatch(id: number) {
   );
   if (!batch) throw notFound("Batch");
   const items = await q(
-    `SELECT i.*, p.status AS post_status, p.published_at AS post_published_at, p.last_error AS post_error
+    `SELECT i.*, p.status AS post_status, p.published_at AS post_published_at, p.last_error AS post_error,
+            (SELECT r.id FROM content_revisions r WHERE r.bot_item_id = i.id AND r.status = 'pending' ORDER BY r.id DESC LIMIT 1) AS pending_revision_id
      FROM bot_items i LEFT JOIN posts p ON p.id = i.post_id WHERE i.batch_id=$1 ORDER BY i.position, i.id`,
     [id],
   );
@@ -172,7 +183,7 @@ const pending = (items: Row[]) => items.filter((i) => !isHandedOff(i));
 // so nothing edits the batch while the bots work on it. A run that stops sending heartbeats (the server restarted or
 // crashed) is cleared after STALE_SECONDS, with a "Stopped" note in the activity log.
 
-export type RunStep = "caption" | "schedule" | "check" | "handoff";
+export type RunStep = "caption" | "edit" | "schedule" | "check" | "handoff";
 export interface RunState {
   step: RunStep;
   message: string;
@@ -188,7 +199,7 @@ interface StoredRun extends RunState {
 
 const STALE_SECONDS = 180;
 const HEARTBEAT_MS = 20_000;
-const stepBot = (s: RunStep): BotName => (s === "caption" ? "caption" : s === "schedule" ? "scheduler" : s === "check" ? "checker" : "posting");
+const stepBot = (s: RunStep): BotName => (s === "caption" ? "caption" : s === "edit" ? "editor" : s === "schedule" ? "scheduler" : s === "check" ? "checker" : "posting");
 const STALE_SQL = `(run_heartbeat_at IS NULL OR run_heartbeat_at < now() - make_interval(secs => ${STALE_SECONDS}))`;
 
 function publicRun(r: StoredRun | null | undefined, cancel = false): RunState | null {
@@ -320,7 +331,7 @@ export async function scheduleBatch(batchId: number, userId: number | null) {
   const r = scheduleOf(batch);
   const todo = pending(items);
   const gap = Math.max(0, r.minGapMinutes) * 60_000;
-  const taken: Date[] = [...(await bookedTimes()).map((b) => b.at), ...todo.filter((i) => i.time_locked && i.scheduled_at).map((i) => new Date(i.scheduled_at))];
+  const taken: Date[] = [...(await bookedTimes(batchId)).map((b) => b.at), ...todo.filter((i) => i.time_locked && i.scheduled_at).map((i) => new Date(i.scheduled_at))];
   const free = todo.filter((i) => !i.time_locked);
   const slots = daySlots(r);
   const earliest = Date.now() + 15 * 60_000;
@@ -398,7 +409,7 @@ export async function checkBatch(batchId: number, userId: number | null) {
   const brand = await getBrand();
   const rules = await getRules();
   const todo = pending(items);
-  const booked = await bookedTimes();
+  const booked = await bookedTimes(batchId);
   const gapMs = r.minGapMinutes * 60_000;
   let bad = 0;
   let warn = 0;
@@ -579,7 +590,7 @@ export async function trainStyle(samples: string[], userId: number) {
 
 // ---------------------------------------------------------------- the runner ("Run all bots")
 
-export async function startRun(batchId: number, userId: number, opts: { steps: ("caption" | "schedule" | "check")[]; recaption?: boolean }): Promise<RunState> {
+export async function startRun(batchId: number, userId: number, opts: { steps: ("caption" | "edit" | "schedule" | "check")[]; recaption?: boolean }): Promise<RunState> {
   const ctl = await claimRun(batchId, opts.steps[0], userId, "Getting started");
   void (async () => {
     try {
@@ -611,6 +622,11 @@ export async function startRun(batchId: number, userId: number, opts: { steps: (
             { batchId, level: ok === todo.length ? "good" : "warn", userId },
           );
       }
+      if (opts.steps.includes("edit")) {
+        if (ctl.stop) return;
+        await editStep(batchId, userId, ctl);
+        if (ctl.lost) return;
+      }
       if (opts.steps.includes("schedule")) {
         if (ctl.stop) return;
         await ctl.update({ step: "schedule", message: "Picking dates and times", done: 0, total: 1 });
@@ -630,6 +646,71 @@ export async function startRun(batchId: number, userId: number, opts: { steps: (
     }
   })();
   return publicRun(ctl.state)!;
+}
+
+// ---------------------------------------------------------------- Editor Bot step
+
+/**
+ * Checks every caption in the batch against the creator's standards. Captions that fall short are revised:
+ * applied straight away when auto-revise is on, otherwise saved as a suggestion for a person to accept or reject.
+ */
+async function editStep(batchId: number, userId: number, ctl: RunCtl) {
+  const s = await getStandards();
+  const { items } = await loadBatch(batchId);
+  const withCaption = pending(items).filter((i) => i.caption?.trim());
+  const below = withCaption.filter((i) => !meetsStandards(evaluate(i.caption, s)) && !i.pending_revision_id);
+  await ctl.update({ step: "edit", message: "Checking captions against your standards", done: 0, total: below.length || 1 });
+  let revised = 0;
+  let suggested = 0;
+  let stillShort = 0;
+  let n = 0;
+  for (const item of below) {
+    if (ctl.stop) break;
+    await ctl.update({ message: `Revising "${(item.title || item.caption).slice(0, 60)}"`, done: n });
+    try {
+      // Suggestions get a second pass too if a rule still fails, so what you review usually meets every standard.
+      const r = await revise(item.caption, { tries: s.autoRevise ? s.maxTries : 2 });
+      const ok = meetsStandards(r.after);
+      if (!ok) stillShort++;
+      if (s.autoRevise) {
+        await tx(async (c) => {
+          const changed = await q("UPDATE bot_items SET caption=$2, issues='[]'::jsonb, updated_at=now() WHERE id=$1 AND caption=$3 AND post_id IS NULL AND handed_off_at IS NULL RETURNING id", [item.id, r.text, item.caption], c);
+          if (!changed.length) return;
+          await q(
+            "INSERT INTO content_revisions (bot_item_id, before_text, after_text, results_before, results_after, status, created_by, decided_at) VALUES ($1,$2,$3,$4,$5,'auto',$6,now())",
+            [item.id, item.caption, r.text, JSON.stringify(r.before), JSON.stringify(r.after), userId],
+            c,
+          );
+          revised++;
+        });
+      } else {
+        await q("INSERT INTO content_revisions (bot_item_id, before_text, after_text, results_before, results_after, status, created_by) VALUES ($1,$2,$3,$4,$5,'pending',$6)", [
+          item.id,
+          item.caption,
+          r.text,
+          JSON.stringify(r.before),
+          JSON.stringify(r.after),
+          userId,
+        ]);
+        suggested++;
+      }
+    } catch (err) {
+      stillShort++;
+      log.warn("Editor Bot couldn't revise a caption", { itemId: item.id, error: errMsg(err) });
+    }
+    n++;
+  }
+  if (revised) await q("UPDATE bot_batches SET checked_at=NULL, updated_at=now() WHERE id=$1", [batchId]);
+  if (ctl.lost) return;
+  const meets = withCaption.length - below.length;
+  const parts = [
+    `Checked ${withCaption.length} caption${withCaption.length === 1 ? "" : "s"} against your standards: ${meets} already meet them.`,
+    revised ? `Revised ${revised} automatically.` : "",
+    suggested ? `${suggested} revision${suggested === 1 ? " is" : "s are"} waiting for you to review.` : "",
+    stillShort ? `${stillShort} still need${stillShort === 1 ? "s" : ""} your help.` : "",
+    ctl.cancelled ? "Cancelled before finishing." : "",
+  ];
+  await activity("editor", parts.filter(Boolean).join(" "), { batchId, level: suggested || stillShort || ctl.cancelled ? "warn" : "good", userId });
 }
 
 // ---------------------------------------------------------------- Posting Bot

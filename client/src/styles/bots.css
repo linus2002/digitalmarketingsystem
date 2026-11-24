@@ -13,6 +13,10 @@
   .bots-page .bar i { transition: none; }
 }
 
+/* Six bots: one row on wide screens, three per row on mid-size screens */
+.bots-page .bot-chips { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .bots-page .bot-chips { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
 /* Phones: the office folds away by default and the chips become one swipeable strip, so the batch work comes first. */
 @media (max-width: 759px) {
   .bots-page .bot-chips {

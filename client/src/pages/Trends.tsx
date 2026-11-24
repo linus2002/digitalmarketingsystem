@@ -4,7 +4,9 @@ import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ago, fmtDate } from "../lib/format";
 import { useToast } from "../components/Toast";
-import { Alert, Button, Empty, LoadError, PageHead, Skeleton, Switch, Tag } from "../components/ui";
+import { Alert, Button, Empty, LoadError, Skeleton, Switch, Tag, useDocTitle } from "../components/ui";
+import trendingImg from "../../images/trendingnow.jpg";
+import "../styles/content.css";
 
 interface Topic {
   rank: number;
@@ -74,6 +76,7 @@ function FeedLink({ href, children }: { href: string | null | undefined; childre
 const CAT_TONE: Record<string, "bad" | "info" | "good" | "mute"> = { oncology: "bad", pharmaceutical: "info", medicine: "good", healthcare: "mute" };
 
 export function TrendsPage() {
+  useDocTitle("Trending topics");
   const { can } = useAuth();
   const toast = useToast();
   const nav = useNavigate();
@@ -127,20 +130,23 @@ export function TrendsPage() {
 
   return (
     <>
-      <PageHead
-        title="Trending topics"
-        sub={`What people are searching for on Google right now, plus the five health, pharmaceutical and oncology topics most talked about in the news this week. ${sourcesHint}`}
-        actions={
-          can("trends.refresh") && (
-            <>
+      {/* Banner: the heading sits on the left of the picture */}
+      <header className="trends-hero" style={{ backgroundImage: `url(${trendingImg})` }}>
+        <div className="trends-hero-text">
+          <h1>Trending topics</h1>
+          <p>
+            What people are searching for on Google right now, plus the five health, pharmaceutical and oncology topics most talked about in the news this week. {sourcesHint}
+          </p>
+          {can("trends.refresh") && (
+            <div className="trends-hero-actions">
               <Switch label="Summarise with AI" checked={useAi} onChange={setUseAi} />
               <Button variant="primary" icon="refresh" loading={busy} onClick={refresh}>
                 {busy ? "Scanning feeds…" : "Scan now"}
               </Button>
-            </>
-          )
-        }
-      />
+            </div>
+          )}
+        </div>
+      </header>
       {error && <LoadError error={error} retry={reload} />}
       {loading && !data && <Skeleton rows={5} />}
       {snap && (

@@ -29,6 +29,7 @@ import { metaWebhookRouter } from "./routes/webhooks.js";
 import { botsRouter } from "./routes/bots.js";
 import { notesRouter, notificationsRouter } from "./routes/notifications.js";
 import { mediaRouter } from "./routes/media.js";
+import { editorRouter } from "./routes/editor.js";
 import { statusRouter } from "./routes/status.js";
 
 const app = express();
@@ -88,6 +89,7 @@ app.use("/api/bots", botsRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/notes", notesRouter);
 app.use("/api/media", mediaRouter);
+app.use("/api/editor", editorRouter);
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "No such API endpoint." });
 });

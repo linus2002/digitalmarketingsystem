@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { pipeline } from "node:stream/promises";
 import express, { Router } from "express";
 import { forbidden, intParam } from "../lib/http.js";
 import { userCan } from "../middleware/auth.js";
@@ -36,5 +37,16 @@ mediaRouter.get("/:id", async (req, res) => {
   res.setHeader("Content-Length", String(stat.size));
   res.setHeader("Cache-Control", "private, max-age=86400");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  fs.createReadStream(file).pipe(res);
+  // pipeline() closes both sides and reports errors (file deleted or locked mid-read, viewer gone) instead of
+  // leaving an unhandled stream error that would stop the server.
+  try {
+    await pipeline(fs.createReadStream(file), res);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ERR_STREAM_PREMATURE_CLOSE") return; // the viewer closed the page
+    if (!res.headersSent) {
+      res.removeHeader("Content-Length");
+      res.status(code === "ENOENT" ? 410 : 500).json({ error: code === "ENOENT" ? "The uploaded file is missing from this computer." : "The file couldn't be read." });
+    } else res.destroy();
+  }
 });

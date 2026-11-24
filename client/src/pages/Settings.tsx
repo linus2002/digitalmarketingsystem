@@ -5,6 +5,7 @@ import { useAuth } from "../lib/auth";
 import { ago } from "../lib/format";
 import { useToast } from "../components/Toast";
 import { Alert, Button, ConfirmModal, Empty, IconButton, LoadError, PageHead, SelectField, Skeleton, Switch, Tabs, Tag, TextArea, TextField } from "../components/ui";
+import { LeaveGuard } from "../components/LeaveGuard";
 import "../styles/content.css";
 
 type Tab = "brand" | "facebook" | "sources" | "privacy" | "system";
@@ -26,23 +27,13 @@ export function SettingsPage() {
   const asked = params.get("tab");
   // An unknown or not-allowed ?tab= falls back to the first tab this person may use.
   const tab: Tab | undefined = allowed.find((t) => t.value === asked)?.value ?? allowed[0]?.value;
-  const [brandDirty, setBrandDirty] = useState(false);
+  /** Unsaved edits on the current tab (Brand, Facebook or Privacy). */
+  const [dirty, setDirty] = useState(false);
   const [pendingTab, setPendingTab] = useState<Tab | null>(null);
-
-  // Warn before closing or reloading the page with unsaved brand edits.
-  useEffect(() => {
-    if (!brandDirty) return;
-    const onUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", onUnload);
-    return () => window.removeEventListener("beforeunload", onUnload);
-  }, [brandDirty]);
 
   const go = (t: Tab) => {
     if (t === tab) return;
-    if (tab === "brand" && brandDirty) setPendingTab(t);
+    if (dirty) setPendingTab(t);
     else setParams({ tab: t });
   };
 
@@ -59,28 +50,29 @@ export function SettingsPage() {
   const sub = isAdmin ? "Brand rules for the AI, the Facebook connection, trend sources and privacy." : "Brand rules for the AI and the sources the trend scanner reads.";
   return (
     <>
+      <LeaveGuard when={dirty} message="Your changes in Settings haven't been saved. Leave without saving?" />
       <PageHead title="Settings" sub={sub} />
       {allowed.length > 1 && <Tabs value={tab} onChange={go} tabs={allowed.map(({ value, label }) => ({ value, label }))} />}
       <div className="mt24">
-        {tab === "brand" && <BrandTab onDirty={setBrandDirty} />}
-        {tab === "facebook" && <FacebookTab />}
+        {tab === "brand" && <BrandTab onDirty={setDirty} />}
+        {tab === "facebook" && <FacebookTab onDirty={setDirty} />}
         {tab === "sources" && <SourcesTab />}
-        {tab === "privacy" && <PrivacyTab />}
+        {tab === "privacy" && <PrivacyTab onDirty={setDirty} />}
         {tab === "system" && <SystemTab />}
       </div>
       {pendingTab && (
         <ConfirmModal
           title="Leave without saving?"
-          warning="Your changes to the brand guidelines haven't been saved."
+          warning="Your changes on this tab haven't been saved."
           confirmLabel="Leave without saving"
           onClose={() => setPendingTab(null)}
           onConfirm={() => {
-            setBrandDirty(false);
+            setDirty(false);
             setParams({ tab: pendingTab });
             setPendingTab(null);
           }}
         >
-          <p className="muted mt0">Stay on this tab and press "Save guidelines" to keep them.</p>
+          <p className="muted mt0">Stay on this tab and save to keep them.</p>
         </ConfirmModal>
       )}
     </>
@@ -189,7 +181,7 @@ interface MetaInfo {
   lastSync: { at: string; ok: boolean; error?: string } | null;
 }
 
-function FacebookTab() {
+function FacebookTab({ onDirty }: { onDirty: (dirty: boolean) => void }) {
   const toast = useToast();
   const { data, error, reload } = useLoad(() => api<MetaInfo>("/settings/meta"), []);
   const [pageId, setPageId] = useState("");
@@ -198,6 +190,9 @@ function FacebookTab() {
   useEffect(() => {
     if (data) setPageId(data.pageId);
   }, [data]);
+  const dirty = !!data && (!!token || pageId !== data.pageId);
+  useEffect(() => onDirty(dirty), [dirty, onDirty]);
+  useEffect(() => () => onDirty(false), [onDirty]);
   if (error) return <LoadError error={error} retry={reload} />;
   if (!data) return <Skeleton />;
   async function save() {
@@ -465,19 +460,26 @@ function LiveTrendsBox() {
   );
 }
 
-function PrivacyTab() {
+function PrivacyTab({ onDirty }: { onDirty: (dirty: boolean) => void }) {
   const toast = useToast();
   const ret = useLoad(() => api<{ retention: { leadDays: number; unconsentedDays: number; auditDays: number; aiLogDays: number }; lastRun: { at: string; anonymized: number; deletedUnconsented: number } | null }>("/settings/retention"), []);
   const con = useLoad(() => api<{ consent: { version: string; text: string } }>("/settings/consent"), []);
   const [r, setR] = useState<Record<string, string> | null>(null);
   const [c, setC] = useState<{ version: string; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** The confirmation before a run or before lowering the limits, with what it would remove. */
+  const [confirm, setConfirm] = useState<{ kind: "run" | "save"; anonymize: number; deleteUnconsented: number } | null>(null);
   useEffect(() => {
     if (ret.data) setR(Object.fromEntries(Object.entries(ret.data.retention).map(([k, v]) => [k, String(v)])));
   }, [ret.data]);
   useEffect(() => {
     if (con.data) setC(con.data.consent);
   }, [con.data]);
+  const dirty =
+    (!!r && !!ret.data && Object.entries(ret.data.retention).some(([k, v]) => r[k] !== String(v))) ||
+    (!!c && !!con.data && (c.version !== con.data.consent.version || c.text !== con.data.consent.text));
+  useEffect(() => onDirty(dirty), [dirty, onDirty]);
+  useEffect(() => () => onDirty(false), [onDirty]);
   if (ret.error || con.error)
     return (
       <LoadError
@@ -502,8 +504,52 @@ function PrivacyTab() {
       setBusy(null);
     }
   };
+  const saved = ret.data!.retention;
+  const values = Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Number(v)])) as typeof saved;
+  const save = () => go("save", () => api("/settings/retention", { method: "PUT", body: values }), "Retention saved");
+  const run = () => go("run", () => api("/settings/retention/run", { body: {} }), "Retention run finished");
+  /** Looks up what would be removed, then asks. Saving only asks when a limit gets shorter. */
+  const ask = async (kind: "run" | "save") => {
+    const lowered = values.leadDays < saved.leadDays || values.unconsentedDays < saved.unconsentedDays;
+    if (kind === "save" && !lowered) return void save();
+    setBusy(kind);
+    try {
+      const lim = kind === "save" ? { leadDays: values.leadDays, unconsentedDays: values.unconsentedDays } : {};
+      const { preview } = await api<{ preview: { anonymize: number; deleteUnconsented: number } }>("/settings/retention/preview", { query: lim });
+      if (kind === "save" && !preview.anonymize && !preview.deleteUnconsented) return void (await save());
+      setConfirm({ kind, ...preview });
+    } catch (e) {
+      toast.err("Couldn't check what would be removed", (e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   return (
     <div className="grid g2">
+      {confirm && (
+        <ConfirmModal
+          title={confirm.kind === "run" ? "Run data retention now?" : "Shorten how long inquiries are kept?"}
+          warning="Removed personal data can't be recovered."
+          confirmLabel={confirm.kind === "run" ? "Run now" : "Save"}
+          confirmWord={confirm.anonymize + confirm.deleteUnconsented > 0 ? "remove" : undefined}
+          onClose={() => setConfirm(null)}
+          onConfirm={() => {
+            const k = confirm.kind;
+            setConfirm(null);
+            void (k === "run" ? run() : save());
+          }}
+        >
+          <p>
+            {confirm.kind === "run" ? "This run will" : "With the new limits, the next daily run will"}:
+          </p>
+          <ul>
+            <li>anonymise {plural(confirm.anonymize, "inquiry", "inquiries")} (names, contact details and messages are removed)</li>
+            <li>delete {plural(confirm.deleteUnconsented, "conversation", "conversations")} where the person never agreed</li>
+          </ul>
+          {confirm.kind === "run" && <p className="note">Old audit log and AI history entries past their limits are also removed.</p>}
+        </ConfirmModal>
+      )}
       <div className="board stackv" style={{ gap: 16 }}>
         <h2 className="section">Data retention</h2>
         <TextField label="Anonymise closed inquiries after (days)" type="number" min={30} value={r.leadDays} onChange={(e) => setR({ ...r, leadDays: e.target.value })} hint="Counted from the last activity. Removes names, contact details and messages." />
@@ -515,14 +561,10 @@ function PrivacyTab() {
             {ret.data?.lastRun ? `Last run ${ago(ret.data.lastRun.at)}: ${ret.data.lastRun.anonymized} anonymised, ${ret.data.lastRun.deletedUnconsented} deleted` : "Runs daily."}
           </span>
           <div className="row">
-            <Button variant="quiet" loading={busy === "run"} onClick={() => go("run", () => api("/settings/retention/run", { body: {} }), "Retention run finished")}>
+            <Button variant="quiet" loading={busy === "run"} disabled={!!busy} onClick={() => void ask("run")}>
               Run now
             </Button>
-            <Button
-              variant="primary"
-              loading={busy === "save"}
-              onClick={() => go("save", () => api("/settings/retention", { method: "PUT", body: Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Number(v)])) }), "Retention saved")}
-            >
+            <Button variant="primary" loading={busy === "save"} disabled={!!busy} onClick={() => void ask("save")}>
               Save
             </Button>
           </div>
@@ -534,7 +576,7 @@ function PrivacyTab() {
         <TextField label="Version" value={c.version} onChange={(e) => setC({ ...c, version: e.target.value })} />
         <TextArea label="Wording" value={c.text} onChange={(e) => setC({ ...c, text: e.target.value })} rows={6} hint="{{business}} is replaced with the business name." />
         <div className="row" style={{ justifyContent: "flex-end" }}>
-          <Button variant="primary" loading={busy === "consent"} onClick={() => go("consent", () => api("/settings/consent", { method: "PUT", body: c }), "Consent wording saved")}>
+          <Button variant="primary" loading={busy === "consent"} onClick={() => go("consent", async () => { await api("/settings/consent", { method: "PUT", body: c }); await con.reload(); }, "Consent wording saved")}>
             Save
           </Button>
         </div>

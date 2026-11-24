@@ -14,7 +14,7 @@ import {
 } from "../lib/settings.js";
 import { requirePerm } from "../middleware/auth.js";
 import { graph } from "../services/meta.js";
-import { runRetention } from "../services/retention.js";
+import { previewRetention, runRetention } from "../services/retention.js";
 import { aiStatus } from "../services/ai.js";
 
 export const settingsRouter = Router();
@@ -47,6 +47,19 @@ settingsRouter.put("/brand", requirePerm("settings.brand"), async (req, res) => 
 
 settingsRouter.get("/retention", requirePerm("settings.manage"), async (_req, res) => {
   res.json({ retention: await getRetention(), lastRun: await getSetting("retention.lastRun", null) });
+});
+
+/** What a run would remove with the given (or saved) day limits, for the confirmation before Save or Run now. */
+settingsRouter.get("/retention/preview", requirePerm("settings.manage"), async (req, res) => {
+  const saved = await getRetention();
+  const b = parse(
+    z.object({
+      leadDays: z.coerce.number().int().min(30).max(3650).default(saved.leadDays),
+      unconsentedDays: z.coerce.number().int().min(1).max(90).default(saved.unconsentedDays),
+    }),
+    req.query,
+  );
+  res.json({ preview: await previewRetention(b) });
 });
 
 settingsRouter.put("/retention", requirePerm("settings.manage"), async (req, res) => {

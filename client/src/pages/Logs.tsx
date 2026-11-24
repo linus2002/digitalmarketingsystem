@@ -12,10 +12,20 @@ const LOG_TONE: Record<string, { label: string; tone: "good" | "warn" | "bad" | 
 };
 
 export function PublishLogPage() {
-  const [status, setStatus] = useState<"" | "error" | "retry_scheduled" | "success,dry_run">("");
+  const [status, setStatusRaw] = useState<"" | "error" | "retry_scheduled" | "success,dry_run">("");
+  const [offset, setOffset] = useState(0);
+  // A new filter starts again from the newest attempts.
+  const setStatus = (s: typeof status) => {
+    setStatusRaw(s);
+    setOffset(0);
+  };
   const { data, error, loading, reload } = useLoad(
-    () => api<{ logs: { id: number; post_id: number | null; post_title: string | null; attempt: number; status: string; message: string; created_at: string }[] }>("/logs/publishing", { query: { status } }),
-    [status],
+    () =>
+      api<{ logs: { id: number; post_id: number | null; post_title: string | null; attempt: number; status: string; message: string; created_at: string }[]; hasMore?: boolean }>(
+        "/logs/publishing",
+        { query: { status, limit: PAGE, offset } },
+      ),
+    [status, offset],
   );
   return (
     <>
@@ -73,6 +83,8 @@ export function PublishLogPage() {
               </tbody>
             </table>
           </div>
+        ) : offset ? (
+          <Empty title="No more attempts" />
         ) : status ? (
           <Empty
             title="No attempts match this filter"
@@ -86,6 +98,19 @@ export function PublishLogPage() {
           <Empty title="Nothing logged yet">Attempts appear here once scheduled posts start going out.</Empty>
         )}
       </div>
+      {data && (offset > 0 || data.hasMore) && (
+        <nav className="spread mt16" aria-label="Publishing log pages">
+          <span className="small muted">Showing {data.logs.length ? `${offset + 1}–${offset + data.logs.length}` : "none"}</span>
+          <div className="row">
+            <Button variant="secondary" size="sm" icon="chev-l" disabled={offset === 0 || loading} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
+              Newer
+            </Button>
+            <Button variant="secondary" size="sm" icon="chev-r" disabled={!data.hasMore || loading} onClick={() => setOffset(offset + PAGE)}>
+              Older
+            </Button>
+          </div>
+        </nav>
+      )}
     </>
   );
 }

@@ -350,11 +350,15 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ---- System notices (Test mode, AI not ready) ---- */
 .sys-banners { display: grid; gap: 8px; margin: -8px 0 18px; }
-.sys-banner { display: flex; gap: 10px; align-items: center; padding: 8px 10px 8px 14px; border-radius: 14px; font-size: 13px; }
-.sys-banner > svg { width: 16px; height: 16px; flex: none; }
-.sys-banner.info { background: var(--info-bg); color: var(--info); }
-.sys-banner.warn { background: var(--warn-bg); color: #5c3c00; }
-.sys-banner a { color: inherit; font-weight: 600; }
+.sys-banner { display: flex; gap: 14px; align-items: center; padding: 12px 12px 12px 16px; border-radius: 18px; font-size: 13.5px; color: var(--ink); }
+.sys-badge { width: 36px; height: 36px; flex: none; }
+.sys-body { display: grid; gap: 1px; min-width: 0; }
+.sys-title { font-weight: 600; font-size: 14.5px; line-height: 1.35; }
+.sys-text { color: var(--ink-3); line-height: 1.45; }
+.sys-banner.info { background: #e6ecf5; }
+.sys-banner.warn { background: var(--warn-bg); }
+.sys-banner.warn .sys-text { color: #6b5424; }
+.sys-banner a { color: var(--deep); font-weight: 600; }
 .sys-x { border: 0; background: transparent; color: inherit; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; cursor: pointer; flex: none; }
 .sys-x:hover { background: rgba(20,20,20,.08); }
 .sys-x svg { width: 14px; height: 14px; }

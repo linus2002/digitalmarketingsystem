@@ -133,6 +133,9 @@ postsRouter.get("/", requirePerm("posts.view"), async (req, res) => {
       campaignId: z.coerce.number().int().optional(),
       q: z.string().max(100).optional(),
       limit: z.coerce.number().int().min(1).max(500).default(200),
+      offset: z.coerce.number().int().min(0).default(0),
+      /** "me": only posts this person may approve (not their own or last edited), as the nav badge counts them. */
+      for: z.enum(["me"]).optional(),
     }),
     req.query,
   );
@@ -147,18 +150,21 @@ postsRouter.get("/", requirePerm("posts.view"), async (req, res) => {
   if (f.from) add("COALESCE(p.published_at, p.scheduled_at, p.created_at) >= ?::timestamptz", f.from);
   if (f.to) add("COALESCE(p.published_at, p.scheduled_at, p.created_at) < ?::timestamptz", f.to);
   if (f.campaignId) add("p.campaign_id = ?", f.campaignId);
+  // Same rule as GET /status/badges: authors and last editors can't approve their own posts (admins can).
+  if (f.for === "me" && req.user!.role !== "admin") add("(p.created_by IS DISTINCT FROM ? AND p.last_edited_by IS DISTINCT FROM ?)", req.user!.id);
   if (f.q) add("(p.title ILIKE ? OR p.message ILIKE ?)", `%${f.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`);
-  params.push(f.limit);
-  const posts = await q(
+  // One extra row tells the screen whether there are more to show.
+  params.push(f.limit + 1, f.offset);
+  const rows = await q(
     `SELECT p.id, p.title, p.message, p.status, p.scheduled_at, p.published_at, p.next_attempt_at, p.attempts, p.last_error, p.campaign_id, p.image_url, p.video_url,
             p.hashtags, p.fb_post_id, p.ai_generated, p.created_at, p.updated_at, c.name AS campaign_name, u.name AS created_by_name,
             p.media_id, (SELECT kind FROM media WHERE id = p.media_id) AS media_kind
      FROM posts p LEFT JOIN campaigns c ON c.id=p.campaign_id LEFT JOIN users u ON u.id=p.created_by
      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-     ORDER BY COALESCE(p.scheduled_at, p.published_at, p.updated_at) DESC LIMIT $${params.length}`,
+     ORDER BY COALESCE(p.scheduled_at, p.published_at, p.updated_at) DESC, p.id DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
-  res.json({ posts });
+  res.json({ posts: rows.slice(0, f.limit), hasMore: rows.length > f.limit, offset: f.offset });
 });
 
 /**

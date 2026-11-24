@@ -25,3 +25,29 @@
 .content-break {
   word-break: break-all;
 }
+
+/* ---- Trending topics banner: heading on the left of the picture ---- */
+.trends-hero { position: relative; overflow: hidden; border-radius: 14px; margin: 6px 0 24px; min-height: 240px; display: flex; align-items: center; background-color: #f25a5a; background-size: cover; background-position: right center; background-repeat: no-repeat; isolation: isolate; }
+/* A soft shade on the left keeps the white text readable on the lighter pink part of the picture */
+.trends-hero::before { content: ""; position: absolute; inset: 0; z-index: -1; background: linear-gradient(90deg, rgba(150, 25, 35, .34) 0%, rgba(150, 25, 35, .18) 45%, rgba(150, 25, 35, 0) 68%); }
+.trends-hero-text { max-width: 56%; padding: 32px 36px; color: #fff; }
+.trends-hero h1 { margin: 0; font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1.15; text-shadow: 0 1px 12px rgba(120, 15, 25, .25); }
+.trends-hero p { margin: 10px 0 0; font-size: 14.5px; line-height: 1.6; color: rgba(255, 255, 255, .95); text-shadow: 0 1px 8px rgba(120, 15, 25, .25); }
+.trends-hero-actions { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-top: 18px; }
+.trends-hero-actions .switch { color: #fff; font-weight: 500; }
+.trends-hero-actions .btn-primary { background: #fff; color: #b8261f; }
+.trends-hero-actions .btn-primary:hover { background: #fff1f0; }
+.trends-hero-actions .btn-primary .spin { border-color: rgba(184, 38, 31, .25); border-top-color: #b8261f; }
+@media (max-width: 1100px) { .trends-hero-text { max-width: 68%; } }
+/* Phones: the picture keeps the person on the right; a stronger shade covers it under the text */
+@media (max-width: 760px) {
+  .trends-hero { min-height: 0; background-position: 82% center; }
+  .trends-hero::before { background: linear-gradient(90deg, rgba(150, 25, 35, .55) 0%, rgba(150, 25, 35, .4) 70%, rgba(150, 25, 35, .25) 100%); }
+  .trends-hero-text { max-width: 100%; padding: 24px 20px; }
+  .trends-hero h1 { font-size: 24px; }
+}
+/* The switch in white so it sits well on the red banner */
+.trends-hero-actions .switch input { border-color: rgba(255, 255, 255, .85); background: rgba(255, 255, 255, .15); }
+.trends-hero-actions .switch input::after { background: #fff; }
+.trends-hero-actions .switch input:checked { background: #fff; border-color: #fff; }
+.trends-hero-actions .switch input:checked::after { background: #b8261f; }

@@ -110,7 +110,10 @@ export function LeadDetailPage() {
   const nav = useNavigate();
   const { can, user } = useAuth();
   const toast = useToast();
-  const [reveal, setReveal] = useState(false);
+  // Contacts are revealed for one inquiry only: opening another one hides them again (each reveal is audit-logged).
+  const [revealedFor, setRevealedFor] = useState<string | undefined>(undefined);
+  const reveal = revealedFor === id;
+  const setReveal = (on: boolean) => setRevealedFor(on ? id : undefined);
   const { data, error, loading, reload } = useLoad(() => api<Detail>(`/leads/${id}`, { query: { reveal: reveal ? 1 : undefined } }), [id, reveal]);
   const templates = useLoad(() => api<{ templates: Template[]; categories?: { value: string; label: string }[] }>("/templates"), []);
   const users = useLoad(() => api<{ users: { id: number; name: string; role: string }[] }>("/users/directory"), []);
@@ -444,7 +447,7 @@ export function LeadDetailPage() {
             <div className="spread">
               <p className="label mb0">Contact</p>
               {!lead.anonymized_at && canReveal && (
-                <Button size="sm" variant="quiet" icon="eye" loading={loading && reveal !== lead.revealed} onClick={() => setReveal((r) => !r)}>
+                <Button size="sm" variant="quiet" icon="eye" loading={loading && reveal !== lead.revealed} onClick={() => setReveal(!reveal)}>
                   {reveal ? "Hide" : "Show"}
                 </Button>
               )}
