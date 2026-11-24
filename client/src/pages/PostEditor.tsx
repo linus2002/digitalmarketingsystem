@@ -8,6 +8,7 @@ import { Icon } from "../components/Icons";
 import { Alert, Avatar, Button, ConfirmModal, LoadError, Modal, PageHead, SelectField, Skeleton, StatusTag, Steps, Tag, TextArea, TextField } from "../components/ui";
 import { MediaPreview, MediaUpload, type UploadedMedia } from "../components/MediaUpload";
 import { RevisionModal } from "../components/EditorBot";
+import { LeaveGuard } from "../components/LeaveGuard";
 import "../styles/posts.css";
 
 // ---------------- Shared helpers for the posts pages ----------------
@@ -268,32 +269,6 @@ export function PostEditorPage() {
     return () => clearTimeout(t);
   }, [form.title, form.message]);
 
-  // Unsaved-changes protection: closing/reloading the tab, and any in-app link click (sidebar, breadcrumb…).
-  useEffect(() => {
-    if (!dirty) return;
-    const onUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    const onClick = (e: MouseEvent) => {
-      if (!dirtyRef.current || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      const a = (e.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
-      if (!a || a.target === "_blank" || a.hasAttribute("download")) return;
-      const url = new URL(a.href, window.location.href);
-      if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
-      if (!window.confirm(LEAVE_MSG)) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    };
-    window.addEventListener("beforeunload", onUnload);
-    document.addEventListener("click", onClick, true);
-    return () => {
-      window.removeEventListener("beforeunload", onUnload);
-      document.removeEventListener("click", onClick, true);
-    };
-  }, [dirty]);
-
   useEffect(() => setVideoBroken(false), [form.video_url]);
 
   const set = (k: keyof Form) => (e: { target: { value: string } }) => {
@@ -432,6 +407,7 @@ export function PostEditorPage() {
 
   return (
     <>
+      <LeaveGuard when={() => dirtyRef.current} message={LEAVE_MSG} />
       <PageHead
         crumbs={[{ to: back.to, label: back.label }, { label: isNew ? "New post" : post?.title ?? "" }]}
         title={isNew ? "New post" : post?.title}

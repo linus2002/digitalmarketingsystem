@@ -5,18 +5,23 @@ export const fmtNum = (n: number | null | undefined) => (n == null ? "—" : new
 export const fmtCompact = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(n);
 
+/** A date (and optionally time) in Philippine time, whatever time zone the viewer's computer is in. */
 export function fmtDate(v: string | null | undefined, withTime = false) {
   if (!v) return "—";
-  // A bare date ("2026-03-01") is a calendar day: read it as local midnight, not UTC (which can show the day before).
+  // A bare date ("2026-03-01") is a calendar day, not a moment: show that exact day.
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
-  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(v);
+  const d = m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))) : new Date(v);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("en-GB", withTime ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short", year: "numeric" });
+  return d.toLocaleString("en-GB", {
+    timeZone: m ? "UTC" : "Asia/Manila",
+    ...(withTime ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short", year: "numeric" }),
+  });
 }
 
+/** A time of day in Philippine time. */
 export function fmtTime(v: string | null | undefined) {
   if (!v) return "";
-  return new Date(v).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return new Date(v).toLocaleTimeString("en-GB", { timeZone: "Asia/Manila", hour: "2-digit", minute: "2-digit" });
 }
 
 export function ago(v: string | null | undefined) {

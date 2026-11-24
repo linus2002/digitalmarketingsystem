@@ -25,6 +25,25 @@ export async function anonymizeLead(leadId: number, reason: string, userId: numb
   else await tx(run);
 }
 
+// Shared by the run and its preview, so the confirmation counts exactly what a run would remove.
+/** People who never agreed (including those who opted out before agreeing): the whole conversation is deleted. */
+const UNCONSENTED_SQL = `consent_given=false AND status IN ('awaiting_consent','collecting','closed','opted_out')
+  AND last_activity_at < now() - ($1 || ' days')::interval`;
+/** Everyone else, after a period without activity, whatever the status (open ones included). */
+const STALE_SQL = `anonymized_at IS NULL
+  AND status IN ('awaiting_consent','collecting','new','in_progress','waiting_customer','closed','opted_out')
+  AND NOT (consent_given=false AND status IN ('awaiting_consent','collecting','closed','opted_out'))
+  AND last_activity_at < now() - ($1 || ' days')::interval`;
+
+/** How many inquiries a retention run with these settings would delete and anonymise right now (changes nothing). */
+export async function previewRetention(r: { leadDays: number; unconsentedDays: number }) {
+  const [del, anon] = await Promise.all([
+    q<{ n: number }>(`SELECT count(*)::int AS n FROM leads WHERE ${UNCONSENTED_SQL}`, [String(r.unconsentedDays)]),
+    q<{ n: number }>(`SELECT count(*)::int AS n FROM leads WHERE ${STALE_SQL}`, [String(r.leadDays)]),
+  ]);
+  return { deleteUnconsented: del[0].n, anonymize: anon[0].n };
+}
+
 export async function runRetention() {
   const r = await getRetention();
   const summary = {
@@ -37,23 +56,11 @@ export async function runRetention() {
     error: undefined as string | undefined,
   };
   try {
-    // People who never agreed (including those who opted out before agreeing): delete the whole conversation.
-    const del = await q(
-      `DELETE FROM leads WHERE consent_given=false AND status IN ('awaiting_consent','closed','opted_out')
-       AND created_at < now() - ($1 || ' days')::interval RETURNING id`,
-      [String(r.unconsentedDays)],
-    );
+    const del = await q(`DELETE FROM leads WHERE ${UNCONSENTED_SQL} RETURNING id`, [String(r.unconsentedDays)]);
     summary.deletedUnconsented = del.length;
 
-    // Everyone else: anonymise after leadDays without activity, whatever the status (open ones included),
-    // so an inquiry nobody closed doesn't keep personal data forever.
-    const stale = await q<{ id: number }>(
-      `SELECT id FROM leads WHERE anonymized_at IS NULL
-       AND status IN ('collecting','new','in_progress','waiting_customer','closed','opted_out')
-       AND NOT (consent_given=false AND status IN ('closed','opted_out'))
-       AND last_activity_at < now() - ($1 || ' days')::interval`,
-      [String(r.leadDays)],
-    );
+    // So an inquiry nobody closed doesn't keep personal data forever.
+    const stale = await q<{ id: number }>(`SELECT id FROM leads WHERE ${STALE_SQL}`, [String(r.leadDays)]);
     for (const l of stale) {
       await anonymizeLead(l.id, `Retention policy: no activity for ${r.leadDays} days`, null);
       summary.anonymized++;

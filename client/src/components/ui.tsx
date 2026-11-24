@@ -501,11 +501,33 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([t
 // Open dialogs, innermost last: only the top one reacts to Escape and traps Tab.
 const modalStack: string[] = [];
 
-export function Modal({ title, onClose, children, actions, wide }: { title: ReactNode; onClose: () => void; children: ReactNode; actions?: ReactNode; wide?: boolean }) {
+export function Modal({
+  title,
+  onClose,
+  children,
+  actions,
+  wide,
+  guardInput = true,
+}: {
+  title: ReactNode;
+  onClose: () => void;
+  children: ReactNode;
+  actions?: ReactNode;
+  wide?: boolean;
+  /** Ask before Escape, the X or a click outside throws away something typed in the dialog. */
+  guardInput?: boolean;
+}) {
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
+  /** Set once someone types or picks something in the dialog. The dialog's own Cancel button still closes at once. */
+  const typed = useRef(false);
+  const guardRef = useRef(guardInput);
+  guardRef.current = guardInput;
   const closeRef = useRef(onClose);
-  closeRef.current = onClose;
+  closeRef.current = () => {
+    if (guardRef.current && typed.current && !window.confirm("Discard what you've typed in this window?")) return;
+    onClose();
+  };
 
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
@@ -556,11 +578,20 @@ export function Modal({ title, onClose, children, actions, wide }: { title: Reac
   }, [id]);
 
   return (
-    <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div ref={ref} tabIndex={-1} className={`modal ${wide ? "wide" : ""} ${actions ? "has-actions" : ""}`} role="dialog" aria-modal="true" aria-labelledby={id}>
+    <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && closeRef.current()}>
+      <div
+        ref={ref}
+        tabIndex={-1}
+        className={`modal ${wide ? "wide" : ""} ${actions ? "has-actions" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={id}
+        onInput={() => (typed.current = true)}
+        onChange={() => (typed.current = true)}
+      >
         <div className="spread modal-head" style={{ marginBottom: 12 }}>
           <h3 id={id}>{title}</h3>
-          <button type="button" className="btn btn-icon" aria-label="Close" onClick={onClose}>
+          <button type="button" className="btn btn-icon" aria-label="Close" onClick={() => closeRef.current()}>
             <Icon name="x" />
           </button>
         </div>
@@ -597,6 +628,7 @@ export function ConfirmModal({
     <Modal
       title={title}
       onClose={onClose}
+      guardInput={false}
       actions={
         <>
           <Button variant="quiet" onClick={onClose}>

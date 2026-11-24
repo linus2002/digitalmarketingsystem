@@ -9,6 +9,7 @@ import { ago, bizToday, BUSINESS_TZ_LABEL, fmtBiz, fmtDate, fromBizInput, POST_S
 import { Alert, Button, Check, ConfirmModal, Empty, IconButton, LoadError, Modal, PageHead, Seg, SelectField, Skeleton, StatusTag, Steps, Switch, Tabs, Tag, TextArea, TextField } from "../components/ui";
 import { BOT_ORDER, BOTS, BotFace, BotFlow, FLOW, type BotName, type BotView } from "../components/BotArt";
 import { BotOffice } from "../components/OfficeScene";
+import { LeaveGuard } from "../components/LeaveGuard";
 import "../styles/bots.css";
 
 // ---------------------------------------------------------------- types
@@ -252,7 +253,8 @@ export function BotsPage() {
   const admin = user?.role === "admin";
   const panelRef = useRef<HTMLElement>(null);
 
-  // Unsaved Team rules / Scheduler settings: ask before switching away from them.
+  // Unsaved Team rules / Scheduler settings / Editor standards: ask before switching away from them (inside the page
+// here; leaving the page or closing the tab is handled by <LeaveGuard>).
   const dirtyRef = useRef(false);
   const setDirty = useCallback((d: boolean) => {
     dirtyRef.current = d;
@@ -262,15 +264,6 @@ export function BotsPage() {
     if (dirtyRef.current) setLeave(() => fn);
     else fn();
   };
-  useEffect(() => {
-    const warn = (e: BeforeUnloadEvent) => {
-      if (!dirtyRef.current) return;
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, []);
 
   const choose = (id: number | null) => {
     setBatchId(id);
@@ -336,6 +329,7 @@ export function BotsPage() {
 
   return (
     <div className="bots-page">
+      <LeaveGuard when={() => dirtyRef.current} message="You have unsaved bot settings. Leave without saving?" />
       <PageHead
         title="AI bots"
         sub="Five bots that turn your notes into scheduled Facebook posts: one writes captions, one learns your style, one picks times, one checks everything and one hands the posts over. Another manager still approves every post."
