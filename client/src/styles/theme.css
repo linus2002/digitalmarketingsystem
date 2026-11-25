@@ -1,0 +1,104 @@
+/* =====================================================================
+   Color themes, set on <html data-theme="..."> by lib/theme.ts.
+   default: light pages with a near-black sidebar
+   light:   everything light
+   dark:    everything dark
+   Components use the tokens from app.css, so a theme only swaps tokens,
+   plus a few rules where a color is used as a background with white text.
+   ===================================================================== */
+:root {
+  --soft: #f4f4f2;     /* hover, muted tags, code, disabled fields, incoming bubbles */
+  --soft-2: #fbfbfa;   /* table heads, calendar headers, faint fills */
+  --toast-bg: #141414;
+  --warn-ink: #5c3c00;  /* text on warning backgrounds */
+  --bad-ink: #7a1810;   /* text on error backgrounds */
+  --line-ink: #1b2a6b;  /* journey map lines and step numbers */
+}
+
+/* ---- Default: the sidebar gets its own dark tokens; the pages stay light ---- */
+:root[data-theme="default"] .side {
+  --side-bg: #111214;
+  --side-hover: #1e2025;
+  --ink: #f3f3f4;
+  --ink-2: #c6c8ce;
+  --ink-3: #8a8e97;
+  --rule: #25272c;
+  --mint: #1f2b45;       /* current page */
+  --deep: #8fb4f7;       /* current page icon */
+  --scroll: #34373e;
+  --scroll-hover: #4a4e57;
+  --focus-ring: 2px solid #8fb4f7;
+  color: var(--ink);
+  border-right-color: #111214;
+}
+
+/* ---- Dark ---- */
+:root[data-theme="dark"] {
+  --ink: #ececee;
+  --ink-2: #c3c5cb;
+  --ink-3: #8f939c;
+  --rule: #2a2d33;
+  --outline: #575b64;
+  --canvas: #17191d;
+  --bench: #111316;
+  --soft: #222429;
+  --soft-2: #1c1e22;
+
+  --blue-soft: #1a2640;
+  --blue-soft-2: #26385c;
+  --blue-dark: #8fb4f7;   /* links and active icons need to be light on dark */
+  --blue-light: #6c9cf0;
+
+  --good: #5fcf8a;  --good-bg: #13301f;
+  --warn: #f2c25a;  --warn-bg: #33290e;
+  --bad: #f2857e;   --bad-bg: #3a1917;
+  --info: #9fbdf5;  --info-bg: #182540;
+
+  --focus: 0 0 0 3px rgba(108, 156, 240, .35);
+  --focus-ring: 2px solid #8fb4f7;
+  --side-bg: #0f1013;
+  --side-hover: #1e2025;
+  --scroll: #3a3d44;
+  --scroll-hover: #50545d;
+  --toast-bg: #2b2e35;
+  --warn-ink: #f5d38a;
+  --bad-ink: #f6aaa4;
+  --line-ink: #9fb7f3;
+}
+:root[data-theme="dark"] .side { border-right-color: var(--rule); }
+
+/* Colors used as backgrounds behind white text: keep them strong in dark */
+:root[data-theme="dark"] .btn-danger,
+:root[data-theme="dark"] .step.fail i { background: var(--red); border-color: var(--red); }
+:root[data-theme="dark"] .btn-danger:hover { background: #b8261f; }
+:root[data-theme="dark"] .toast,
+:root[data-theme="dark"] .tip .bubble { background: var(--toast-bg); color: #fff; }
+:root[data-theme="dark"] .lp-band { background: linear-gradient(120deg, var(--blue) 0%, #153f91 100%); }
+:root[data-theme="dark"] .lp-btn-white { color: #153f91; }
+:root[data-theme="dark"] .spin { border-color: rgba(255,255,255,.35); border-top-color: #fff; }
+:root[data-theme="dark"] .btn-secondary .spin,
+:root[data-theme="dark"] .btn-soft .spin,
+:root[data-theme="dark"] .btn-quiet .spin { border-color: rgba(255,255,255,.2); border-top-color: var(--ink); }
+:root[data-theme="dark"] .select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23ececee' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E"); }
+:root[data-theme="dark"] .input::placeholder,
+:root[data-theme="dark"] .textarea::placeholder { color: #7a7e87; }
+
+/* Fixed light tints elsewhere in the app */
+:root[data-theme="dark"] .bot-chip[aria-pressed=true],
+:root[data-theme="dark"] .bot-says,
+:root[data-theme="dark"] .bot-run { background: #231d3d; color: var(--ink); }
+:root[data-theme="dark"] .bot-run { border-color: #4a3d8f; }
+:root[data-theme="dark"] .office-svg { background: linear-gradient(180deg, #1f2130 0%, var(--canvas) 70%); }
+:root[data-theme="dark"] .ed-diff ins { background: #13301f; color: #7fdca2; }
+:root[data-theme="dark"] .ed-diff del { background: #3a1917; color: #f5a29c; }
+:root[data-theme="dark"] .ed-suggest { background: #0f2c2b; border-color: #1d4e4b; color: #8fe0d9; }
+:root[data-theme="dark"] .bubble-msg.pending { border-color: #5c4a1c; }
+:root[data-theme="dark"] .bubble-msg.blocked,
+:root[data-theme="dark"] .bubble-msg.failed,
+:root[data-theme="dark"] .bubble-msg.rejected { border-color: #5c2622; }
+:root[data-theme="dark"] .bw-line.s-attention { border-color: #5c4a1c; }
+:root[data-theme="dark"] .lp-mock-inq { background: var(--warn-bg); }
+:root[data-theme="dark"] .lp-mock-bar i { background: var(--outline); }
+:root[data-theme="dark"] .jm-ava { background: linear-gradient(160deg, #26385c, #1a2640); box-shadow: 0 0 0 2px var(--canvas), 0 1px 4px rgba(0,0,0,.4); }
+:root[data-theme="dark"] .modal,
+:root[data-theme="dark"] .tb-pop { box-shadow: 0 18px 50px rgba(0,0,0,.5); }

@@ -1,0 +1,50 @@
+/* ---- Social platforms: icons, picker, per-platform status ---- */
+.pf-ico { flex: none; display: inline-block; vertical-align: middle; }
+
+.pf-pick { border: 0; margin: 0; padding: 0; min-width: 0; }
+.pf-pick legend { padding: 0; margin-bottom: 8px; }
+.pf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.pf-opt { position: relative; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 14px; cursor: pointer; background: var(--canvas); transition: border-color .15s, background .15s; }
+.pf-opt:hover { border-color: var(--outline); }
+.pf-opt.on { border-color: var(--primary); background: var(--mint); }
+.pf-opt.on.warn { border-color: var(--warn); background: var(--warn-bg); }
+.pf-opt input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.pf-opt:has(input:focus-visible) { outline: var(--focus-ring); outline-offset: 2px; }
+.pf-opt:has(input:disabled) { cursor: default; }
+.pf-opt::after { content: ""; margin-left: auto; flex: none; width: 18px; height: 18px; border-radius: 6px; border: 1.5px solid var(--outline); background: var(--canvas); }
+.pf-opt.on::after { border-color: var(--primary); background: var(--primary) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 8.5 2.6 2.5L12 5.5'/%3E%3C/svg%3E") center / 14px no-repeat; }
+.pf-name { display: flex; flex-direction: column; min-width: 0; font-size: 13.5px; font-weight: 500; line-height: 1.3; }
+.pf-name small { font-size: 11.5px; font-weight: 400; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-problems { list-style: none; margin: 10px 0 0; padding: 10px 12px; border-radius: 12px; background: var(--warn-bg); color: var(--warn); font-size: 12.5px; display: grid; gap: 4px; }
+.pf-problems li { display: flex; gap: 8px; align-items: center; }
+
+.pf-targets { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.pf-targets li { padding: 8px 10px; border: 1px solid var(--rule); border-radius: 12px; font-size: 13px; }
+.pf-row-main { display: flex; gap: 10px; align-items: center; }
+.pf-targets li.pf-check { border-color: var(--warn); }
+.pf-check-box { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: var(--warn-bg); color: var(--ink); display: grid; gap: 8px; font-size: 12.5px; }
+.pf-targets b { font-weight: 500; display: block; }
+.pf-err { display: block; color: var(--bad); font-size: 12px; overflow-wrap: anywhere; }
+.pf-state { flex: none; font-size: 12px; font-weight: 500; padding: 2px 10px; border-radius: 999px; background: var(--soft); color: var(--ink-2); text-decoration: none; }
+.pf-t-published .pf-state { background: var(--good-bg); color: var(--good); }
+.pf-t-failed .pf-state { background: var(--bad-bg); color: var(--bad); }
+.pf-t-publishing .pf-state { background: var(--info-bg); color: var(--info); }
+
+/* Platform filter (calendar, posts list) */
+.pf-filter { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.pf-filter button { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px 0 8px; border-radius: 999px; border: 1px solid var(--rule); background: var(--canvas); color: var(--ink-2); font: inherit; font-size: 12.5px; cursor: pointer; }
+.pf-filter button:first-child { padding-left: 12px; }
+.pf-filter button:hover { border-color: var(--outline); }
+.pf-filter button[aria-pressed=true] { border-color: var(--primary); background: var(--mint); color: var(--ink); font-weight: 500; }
+
+/* Settings → Social accounts */
+.sa-list { display: grid; gap: 12px; }
+.sa-card { border: 1px solid var(--rule); border-radius: 18px; padding: 16px 18px; }
+.sa-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.sa-head b { font-size: 15px; font-weight: 600; }
+.sa-head .muted { font-size: 12.5px; }
+.sa-body { margin-top: 14px; display: grid; gap: 12px; }
+.sa-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.sa-redirect { font-size: 12.5px; background: var(--soft); border-radius: 10px; padding: 8px 12px; overflow-wrap: anywhere; }
+.pf-row { display: flex; gap: 4px; margin-top: 6px; }
+.pf-label { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }

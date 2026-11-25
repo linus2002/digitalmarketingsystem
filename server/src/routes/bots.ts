@@ -31,6 +31,8 @@ import {
   withRun,
   writeCaption,
 } from "../services/bots.js";
+import { isTimeZone } from "../services/bots.js";
+import { teamOverview } from "../services/teamReview.js";
 
 export const botsRouter = Router();
 
@@ -88,6 +90,11 @@ botsRouter.get("/overview", view, async (req, res) => {
     dryRun: env.PUBLISH_DRY_RUN,
     canScheduleDirectly: admin,
   });
+});
+
+/** The team's posts the bots are watching, and what they're doing right now (polled by the bots page). */
+botsRouter.get("/team", requirePerm("posts.view"), async (_req, res) => {
+  res.json(await teamOverview());
 });
 
 /** Planned by bots: items with a time that haven't been handed off yet (shown on the calendar). */
@@ -174,12 +181,18 @@ const scheduleBody = z.object({
   days: z.enum(["daily", "weekdays", "mwf", "custom"]),
   customDays: z.array(z.number().int().min(0).max(6)).max(7),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
-  mode: z.enum(["auto", "times"]),
+  mode: z.enum(["smart", "auto", "times"]),
   times: z.array(hhmm).min(1).max(20),
   windowStart: hhmm,
   windowEnd: hhmm,
   perDay: z.number().int().min(1).max(100),
   minGapMinutes: z.number().int().min(0).max(24 * 60),
+  /** Clock the days and times are read in (an IANA name like Asia/Manila). Older batches don't have it. */
+  timeZone: z
+    .string()
+    .max(64)
+    .refine((tz) => isTimeZone(tz), "Pick a time zone from the list.")
+    .optional(),
 });
 
 botsRouter.patch("/batches/:id", edit, async (req, res) => {

@@ -4,6 +4,7 @@ import { Icon, type IconName } from "./Icons";
 import { TopBar } from "./TopBar";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
+import { readCollapsed, saveCollapsed } from "../lib/theme";
 
 interface Item {
   to: string;
@@ -104,10 +105,10 @@ function StatusBanner({ status, isAdmin }: { status: SystemStatus | null; isAdmi
   const test = status.publishTestMode || status.messengerTestMode;
   const testText =
     status.publishTestMode && status.messengerTestMode
-      ? "Posts and Messenger replies aren't sent to Facebook."
+      ? "Posts aren't sent to any social platform, and Messenger replies aren't sent."
       : status.publishTestMode
-        ? "Posts aren't sent to Facebook."
-        : "Messenger replies aren't sent to Facebook.";
+        ? "Posts aren't sent to any social platform."
+        : "Messenger replies aren't sent.";
   const notices: { key: string; tone: "info" | "warn"; badge: BadgeKind; title: string; text: string; link?: { to: string; label: string } }[] = [];
   if (test && !hidden.test)
     notices.push({ key: "test", tone: "info", badge: "test", title: "Test mode is on", text: testText, link: isAdmin ? { to: "/settings", label: "Settings" } : undefined });
@@ -151,6 +152,24 @@ export function Layout() {
   const loc = useLocation();
   const narrow = useNarrow();
   const [open, setOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const mini = collapsed && !narrow;
+  // Label shown beside an icon in the collapsed rail. Fixed-position so the sidebar's scroll box doesn't clip it.
+  const [tip, setTip] = useState<{ label: string; top: number; left: number } | null>(null);
+  const showTip = (label: string) => (e: { currentTarget: HTMLElement }) => {
+    if (!mini) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    setTip({ label, top: r.top + r.height / 2, left: r.right + 10 });
+  };
+  const hideTip = () => setTip(null);
+  useEffect(() => {
+    if (!mini) setTip(null);
+  }, [mini]);
+  const toggleCollapsed = () =>
+    setCollapsed((c) => {
+      saveCollapsed(!c);
+      return !c;
+    });
   const [counts, setCounts] = useState<{ review?: number; leads?: number }>({});
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const sideRef = useRef<HTMLElement>(null);
@@ -234,7 +253,7 @@ export function Layout() {
         { to: "/bots", label: "AI bots", icon: "bot", perm: "content.generate" },
         {
           to: "/posts",
-          label: "Post approvals",
+          label: "Posts and approvals",
           icon: "doc",
           perm: "posts.view",
           count: counts.review,
@@ -270,22 +289,34 @@ export function Layout() {
   const visible = (i: Item) => (!i.perm || can(i.perm)) && (!i.anyOf || i.anyOf.some((p) => can(p)));
 
   return (
-    <div className={`app ${open ? "nav-open" : ""}`}>
+    <div className={`app ${open ? "nav-open" : ""} ${mini ? "side-collapsed" : ""}`}>
       <a href="#main" className="skip-link">
         Skip to content
       </a>
       {/* Pointer-only dismiss: keyboard users close with Escape or the Close button */}
       {open && <div className="scrim" aria-hidden="true" onClick={() => closeDrawer(true)} />}
-      <aside className="side" id="side-nav" ref={sideRef} aria-hidden={drawerHidden || undefined} aria-label="Menu">
+      <aside className="side" id="side-nav" ref={sideRef} aria-hidden={drawerHidden || undefined} aria-label="Menu" onScroll={hideTip}>
         <div className="brand">
           <span className="mark">{BRAND.short}</span>
           <div className="grow">
             <b>{BRAND.name}</b>
             <span>{BRAND.org}</span>
           </div>
-          {narrow && (
+          {narrow ? (
             <button type="button" className="btn btn-icon side-close" aria-label="Close menu" onClick={() => closeDrawer(true)}>
               <Icon name="x" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-icon side-toggle"
+              aria-label={mini ? "Expand menu" : "Collapse menu"}
+              title={mini ? "Expand menu" : "Collapse menu"}
+              aria-expanded={!mini}
+              aria-controls="side-nav"
+              onClick={toggleCollapsed}
+            >
+              <Icon name={mini ? "chev-r" : "chev-l"} />
             </button>
           )}
         </div>
@@ -303,7 +334,15 @@ export function Layout() {
                 )}
                 {items.map((i) => (
                   <div key={i.to} className="nav-row">
-                    <NavLink to={i.to} end={i.end}>
+                    <NavLink
+                      to={i.to}
+                      end={i.end}
+                      onMouseEnter={showTip(i.label)}
+                      onMouseLeave={hideTip}
+                      onFocus={showTip(i.label)}
+                      onBlur={hideTip}
+                      onClick={hideTip}
+                    >
                       <Icon name={i.icon} />
                       <span className="grow">{i.label}</span>
                     </NavLink>
@@ -322,6 +361,11 @@ export function Layout() {
           })}
         </nav>
       </aside>
+      {mini && tip && (
+        <div className="side-tip" style={{ top: tip.top, left: tip.left }} aria-hidden="true">
+          {tip.label}
+        </div>
+      )}
       <div className="app-col">
         <TopBar
           org={status?.businessName ?? BRAND.org}

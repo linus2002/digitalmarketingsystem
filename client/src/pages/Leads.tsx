@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ago, CONTACT_LABEL, LEAD_STATUS, SOURCE_LABEL } from "../lib/format";
@@ -52,6 +52,7 @@ export function LeadsPage() {
   const { can } = useAuth();
   // Tab, category and search live in the URL (?filter=review&category=…&q=…) so links and the nav badge land on the right view.
   const [params, setParams] = useSearchParams();
+  const location = useLocation();
   const rawView = params.get("filter") as View | null;
   const view: View = rawView && VIEWS.includes(rawView) ? rawView : "all";
   const category = params.get("category") ?? "";
@@ -193,7 +194,7 @@ export function LeadsPage() {
                           <Icon name={l.source === "messenger" ? "msg" : l.source === "website" ? "globe" : "phone"} />
                         </span>
                         <div>
-                          <Link className="name" to={`/leads/${l.id}`}>
+                          <Link className="name" to={`/leads/${l.id}`} state={{ from: { to: `/leads${location.search}`, label: "Inquiries" } }}>
                             {l.medicine_name ?? "Medicine not given"}
                           </Link>
                           <span className="sub">

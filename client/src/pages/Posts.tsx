@@ -6,6 +6,7 @@ import { useToast } from "../components/Toast";
 import { ago, bizToday, BUSINESS_TZ_LABEL, fmtBiz, POST_STATUS } from "../lib/format";
 import { ExportMenu, ImportModal, postsDoc, type ExportablePost } from "../components/ExportImport";
 import { Button, Empty, LinkButton, LoadError, PageHead, SearchInput, Skeleton, StatusTag, Tabs, Tag } from "../components/ui";
+import { PLATFORM, PlatformIcon, platformsOf, type Target } from "../components/Platforms";
 import "../styles/posts.css";
 
 interface PostRow {
@@ -21,6 +22,7 @@ interface PostRow {
   ai_generated: boolean;
   last_error: string | null;
   attempts: number;
+  targets?: Target[] | null;
 }
 
 const VIEWS = {
@@ -232,6 +234,11 @@ export function PostsPage() {
                         {p.title}
                       </Link>
                       <span className="sub clamp">{p.message}</span>
+                      <span className="pf-row" aria-label={`Posts to ${platformsOf(p).map((k) => PLATFORM[k].short).join(", ")}`}>
+                        {platformsOf(p).map((k) => (
+                          <PlatformIcon key={k} p={k} size={16} />
+                        ))}
+                      </span>
                     </td>
                     <td>{p.campaign_name ? <Tag tone="outline">{p.campaign_name}</Tag> : <span className="muted">—</span>}</td>
                     <td>

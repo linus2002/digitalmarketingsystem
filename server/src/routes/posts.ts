@@ -7,6 +7,11 @@ import { notify, usersWithPerm } from "../services/notifications.js";
 import { fmtPh } from "../services/bots.js";
 import { requirePerm, userCan } from "../middleware/auth.js";
 import { composeMessage } from "../services/publisher.js";
+import { postBotStatus } from "../services/teamReview.js";
+import { toFacebookText } from "../lib/fbText.js";
+import { env } from "../config/env.js";
+import { platformProblem } from "../lib/platformRules.js";
+import { connectedPlatforms, PLATFORM_IDS, PLATFORM_LABEL, type PlatformId } from "../services/platforms/index.js";
 
 export const postsRouter = Router();
 
@@ -72,11 +77,58 @@ const postBody = z.object({
   scheduled_at: z.string().datetime({ offset: true }).nullable().optional(),
   ai_generated: z.boolean().optional(),
   source_topic: z.string().max(300).nullable().optional(),
+  /** Where it goes. Defaults to Facebook. */
+  platforms: z.array(z.enum(PLATFORM_IDS)).min(1, "Pick at least one platform.").max(PLATFORM_IDS.length).optional(),
 });
 
 const BOTH_MEDIA = "Use one image or one video per post (an upload or a link, not both). Remove the others.";
 /** Fields that change what gets published. Same list as the editor's "needs approval again" warning. */
 const CONTENT_FIELDS = ["title", "message", "hashtags", "image_url", "video_url", "media_id", "link_url"] as const;
+
+/** Each platform the post goes to, with its own status and link. */
+const TARGETS_SQL = `(SELECT COALESCE(json_agg(json_build_object('platform', t.platform, 'status', t.status, 'url', t.external_url, 'error', t.last_error,
+                       'published_at', t.published_at, 'uncertain', t.uncertain) ORDER BY t.id), '[]'::json) FROM post_targets t WHERE t.post_id = p.id) AS targets`;
+
+/** Sets the platforms a post goes to. Ones it's already published on always stay. */
+async function setPlatforms(postId: number, platforms: PlatformId[], db?: Db) {
+  await q("DELETE FROM post_targets WHERE post_id=$1 AND status <> 'published' AND NOT (platform = ANY($2::text[]))", [postId, platforms], db);
+  await q("INSERT INTO post_targets (post_id, platform) SELECT $1, unnest($2::text[]) ON CONFLICT (post_id, platform) DO NOTHING", [postId, platforms], db);
+}
+
+/**
+ * Before scheduling: failed platforms get another go, except ones whose post may already be live (no answer, or
+ * interrupted mid-send). Those wait until a person checks the platform and says what they found
+ * (POST /:id/targets/:platform), so Try again never posts twice.
+ */
+async function resetFailedTargets(postId: number, db?: Db) {
+  await q("UPDATE post_targets SET status='pending', last_error=NULL, updated_at=now() WHERE post_id=$1 AND status='failed' AND NOT uncertain", [postId], db);
+}
+
+/** Problems that would stop the post going out on one of its platforms (rules, and connections when live). */
+async function platformProblems(post: Row, rulesOnly = false): Promise<string[]> {
+  const targets = await q<{ platform: PlatformId }>("SELECT platform FROM post_targets WHERE post_id=$1 AND status <> 'published'", [post.id]);
+  const list = targets.length ? targets.map((t) => t.platform) : (["facebook"] as PlatformId[]);
+  const media = post.media_id
+    ? { kind: post.media_kind as "image" | "video", mime: post.media_mime as string }
+    : post.video_url
+      ? { kind: "video" as const }
+      : post.image_url
+        ? { kind: "image" as const }
+        : null;
+  const text = toFacebookText(composeMessage(post as { message: string; hashtags: string[] }));
+  const connected = env.PUBLISH_DRY_RUN || rulesOnly ? null : await connectedPlatforms();
+  const out: string[] = [];
+  for (const p of list) {
+    const problem = platformProblem(p, { text, link: post.link_url ?? null, media });
+    if (problem) out.push(problem);
+    else if (connected && !connected[p]) out.push(`${PLATFORM_LABEL[p]} isn't connected (Settings → Social accounts).`);
+  }
+  return out;
+}
+async function requirePlatformsReady(post: Row) {
+  const problems = await platformProblems(post);
+  if (problems.length) throw badRequest(`This post can't go out yet: ${problems.join(" ")} Fix it, or take that platform off the post.`);
+}
 
 async function checkMediaExists(id: number | null | undefined) {
   if (!id) return;
@@ -88,7 +140,7 @@ const EDITABLE = ["draft", "changes_requested", "in_review", "approved", "schedu
 async function load(id: number): Promise<Row> {
   const post = await one(
     `SELECT p.*, c.name AS campaign_name, cu.name AS created_by_name, au.name AS approved_by_name, eu.name AS last_edited_by_name,
-            md.kind AS media_kind, md.mime AS media_mime, md.original_name AS media_name, md.size_bytes AS media_size
+            md.kind AS media_kind, md.mime AS media_mime, md.original_name AS media_name, md.size_bytes AS media_size, ${TARGETS_SQL}
      FROM posts p LEFT JOIN campaigns c ON c.id=p.campaign_id LEFT JOIN users cu ON cu.id=p.created_by LEFT JOIN users au ON au.id=p.approved_by
      LEFT JOIN users eu ON eu.id=p.last_edited_by LEFT JOIN media md ON md.id=p.media_id
      WHERE p.id=$1`,
@@ -136,6 +188,7 @@ postsRouter.get("/", requirePerm("posts.view"), async (req, res) => {
       offset: z.coerce.number().int().min(0).default(0),
       /** "me": only posts this person may approve (not their own or last edited), as the nav badge counts them. */
       for: z.enum(["me"]).optional(),
+      platform: z.enum(PLATFORM_IDS).optional(),
     }),
     req.query,
   );
@@ -150,6 +203,7 @@ postsRouter.get("/", requirePerm("posts.view"), async (req, res) => {
   if (f.from) add("COALESCE(p.published_at, p.scheduled_at, p.created_at) >= ?::timestamptz", f.from);
   if (f.to) add("COALESCE(p.published_at, p.scheduled_at, p.created_at) < ?::timestamptz", f.to);
   if (f.campaignId) add("p.campaign_id = ?", f.campaignId);
+  if (f.platform) add("EXISTS (SELECT 1 FROM post_targets t WHERE t.post_id = p.id AND t.platform = ?)", f.platform);
   // Same rule as GET /status/badges: authors and last editors can't approve their own posts (admins can).
   if (f.for === "me" && req.user!.role !== "admin") add("(p.created_by IS DISTINCT FROM ? AND p.last_edited_by IS DISTINCT FROM ?)", req.user!.id);
   if (f.q) add("(p.title ILIKE ? OR p.message ILIKE ?)", `%${f.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`);
@@ -158,7 +212,7 @@ postsRouter.get("/", requirePerm("posts.view"), async (req, res) => {
   const rows = await q(
     `SELECT p.id, p.title, p.message, p.status, p.scheduled_at, p.published_at, p.next_attempt_at, p.attempts, p.last_error, p.campaign_id, p.image_url, p.video_url,
             p.hashtags, p.fb_post_id, p.ai_generated, p.created_at, p.updated_at, c.name AS campaign_name, u.name AS created_by_name,
-            p.media_id, (SELECT kind FROM media WHERE id = p.media_id) AS media_kind
+            p.media_id, (SELECT kind FROM media WHERE id = p.media_id) AS media_kind, ${TARGETS_SQL}
      FROM posts p LEFT JOIN campaigns c ON c.id=p.campaign_id LEFT JOIN users u ON u.id=p.created_by
      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
      ORDER BY COALESCE(p.scheduled_at, p.published_at, p.updated_at) DESC, p.id DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -239,6 +293,7 @@ postsRouter.post("/import", requirePerm("posts.edit"), async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Imported from a spreadsheet',$9,$9) RETURNING id`,
       [candidate.title, candidate.message, candidate.hashtags, candidate.image_url, candidate.video_url, candidate.link_url, campaignId, candidate.scheduled_at, req.user!.id],
     );
+    await q("INSERT INTO post_targets (post_id, platform) VALUES ($1, 'facebook') ON CONFLICT DO NOTHING", [post!.id]);
     created.push({ row: r.row, id: post!.id, title: candidate.title });
   }
   await audit(req, "post.imported", "post", null, { created: created.length, failed: errors.length });
@@ -250,6 +305,13 @@ postsRouter.get("/counts", requirePerm("posts.view"), async (_req, res) => {
   res.json({ counts: Object.fromEntries(rows.map((r) => [r.status, r.n])) });
 });
 
+/** What the bots are doing with this post (polled by the post page while they work). */
+postsRouter.get("/:id/bots", requirePerm("posts.view"), async (req, res) => {
+  const status = await postBotStatus(intParam(req.params.id));
+  if (!status) throw notFound("Post");
+  res.json({ bots: status });
+});
+
 postsRouter.get("/:id", requirePerm("posts.view"), async (req, res) => {
   const id = intParam(req.params.id);
   const post = await load(id);
@@ -258,19 +320,24 @@ postsRouter.get("/:id", requirePerm("posts.view"), async (req, res) => {
     q("SELECT * FROM publish_logs WHERE post_id=$1 ORDER BY created_at DESC LIMIT 50", [id]),
     post.fb_post_id ? one("SELECT * FROM fb_page_posts WHERE fb_post_id=$1", [post.fb_post_id]) : null,
   ]);
-  res.json({ post, reviews, logs, stats, preview: composeMessage(post as { message: string; hashtags: string[] }) });
+  res.json({ post, reviews, logs, stats, preview: toFacebookText(composeMessage(post as { message: string; hashtags: string[] })) });
 });
 
 postsRouter.post("/", requirePerm("posts.edit"), async (req, res) => {
   const b = parse(postBody, req.body);
   if (mediaCount(b.image_url, b.video_url, b.media_id) > 1) throw badRequest(BOTH_MEDIA);
   await checkMediaExists(b.media_id);
-  const post = await one(
-    `INSERT INTO posts (title, message, hashtags, image_url, image_prompt, link_url, campaign_id, scheduled_at, ai_generated, source_topic, created_by, video_url, last_edited_by, media_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$11,$13) RETURNING id`,
-    [b.title, b.message, b.hashtags, b.image_url ?? null, b.image_prompt ?? null, b.link_url ?? null, b.campaign_id ?? null, b.scheduled_at ?? null, b.ai_generated ?? false, b.source_topic ?? null, req.user!.id, b.video_url ?? null, b.media_id ?? null],
-  );
-  await audit(req, "post.created", "post", post!.id);
+  const post = await tx(async (c) => {
+    const row = await one<{ id: number }>(
+      `INSERT INTO posts (title, message, hashtags, image_url, image_prompt, link_url, campaign_id, scheduled_at, ai_generated, source_topic, created_by, video_url, last_edited_by, media_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$11,$13) RETURNING id`,
+      [b.title, b.message, b.hashtags, b.image_url ?? null, b.image_prompt ?? null, b.link_url ?? null, b.campaign_id ?? null, b.scheduled_at ?? null, b.ai_generated ?? false, b.source_topic ?? null, req.user!.id, b.video_url ?? null, b.media_id ?? null],
+      c,
+    );
+    await setPlatforms(row!.id, b.platforms ?? ["facebook"], c);
+    return row;
+  });
+  await audit(req, "post.created", "post", post!.id, { platforms: b.platforms ?? ["facebook"] });
   res.status(201).json({ post: await load(post!.id) });
 });
 
@@ -284,7 +351,9 @@ postsRouter.patch("/:id", requirePerm("posts.edit"), async (req, res) => {
   const nextMedia = "media_id" in b ? (b.media_id ?? null) : post.media_id;
   if (("image_url" in b || "video_url" in b || "media_id" in b) && mediaCount(nextImage, nextVideo, nextMedia) > 1) throw badRequest(BOTH_MEDIA);
   if ("media_id" in b) await checkMediaExists(b.media_id);
-  const contentChanged = CONTENT_FIELDS.some((k) => k in b && JSON.stringify((b as Row)[k] ?? null) !== JSON.stringify(post[k] ?? null));
+  const currentPlatforms = ((post.targets ?? []) as { platform: string }[]).map((t) => t.platform).sort();
+  const platformsChanged = !!b.platforms && JSON.stringify([...new Set(b.platforms)].sort()) !== JSON.stringify(currentPlatforms);
+  const contentChanged = platformsChanged || CONTENT_FIELDS.some((k) => k in b && JSON.stringify((b as Row)[k] ?? null) !== JSON.stringify(post[k] ?? null));
   const resetApproval = contentChanged && ["approved", "scheduled", "in_review", "failed"].includes(post.status);
   // Applies only if the status is still the one resetApproval was based on, so a post that started
   // publishing in the meantime is never overwritten.
@@ -327,8 +396,9 @@ postsRouter.patch("/:id", requirePerm("posts.edit"), async (req, res) => {
     ],
   );
   if (!rows.length) throw conflict("This post changed while you were editing (it may be publishing now). Reload to see the latest version.");
+  if (platformsChanged) await setPlatforms(id, b.platforms!);
   if (resetApproval) await review(id, req, "comment", "Edited after review: needs approval again.");
-  await audit(req, "post.updated", "post", id, { resetApproval });
+  await audit(req, "post.updated", "post", id, { resetApproval, ...(platformsChanged ? { platforms: b.platforms } : {}) });
   res.json({ post: await load(id), resetApproval });
 });
 
@@ -348,6 +418,8 @@ postsRouter.post("/:id/submit", requirePerm("posts.edit"), async (req, res) => {
   const post = await load(id);
   const allowed = ["draft", "changes_requested"];
   requireStatus(post, allowed, "sent for review");
+  const ruleProblems = await platformProblems(post, true);
+  if (ruleProblems.length) throw badRequest(`Fix this before sending it for review: ${ruleProblems.join(" ")}`);
   const note = parse(z.object({ comment: z.string().max(1000).optional() }), req.body ?? {}).comment ?? null;
   await guarded("UPDATE posts SET status='in_review', updated_at=now()", id, allowed, [], "sent for review");
   await review(id, req, "submitted", note);
@@ -369,6 +441,7 @@ postsRouter.post("/:id/approve", requirePerm("posts.approve"), async (req, res) 
   }
   if (b.scheduleAt && !userCan(req, "posts.schedule")) throw forbidden("You can approve but not schedule.");
   if (b.scheduleAt && new Date(b.scheduleAt).getTime() < Date.now() - 60_000) throw badRequest("Pick a time in the future.");
+  if (b.scheduleAt) await requirePlatformsReady(post);
   await tx(async (c) => {
     // Also require the version checked above, so an edit can't slip in between the check and the approval.
     // (JS Dates hold milliseconds and Postgres microseconds, hence the small window.)
@@ -383,6 +456,7 @@ postsRouter.post("/:id/approve", requirePerm("posts.approve"), async (req, res) 
     await review(id, req, "approved", b.comment ?? null, c);
     if (b.scheduleAt) {
       await guarded("UPDATE posts SET status='scheduled', scheduled_at=$3, next_attempt_at=$3, attempts=0, last_error=NULL", id, ["approved"], [b.scheduleAt], "scheduled", c);
+      await resetFailedTargets(id, c);
       await review(id, req, "scheduled", null, c);
     }
   });
@@ -426,6 +500,8 @@ postsRouter.post("/:id/schedule", requirePerm("posts.schedule"), async (req, res
   requireStatus(post, allowed, "scheduled");
   if (!post.approved_by) throw conflict("This post needs approval before it can be scheduled.");
   if (new Date(scheduledAt).getTime() < Date.now() - 60_000) throw badRequest("Pick a time in the future.");
+  await requirePlatformsReady(post);
+  await resetFailedTargets(id);
   await guarded(
     "UPDATE posts SET status='scheduled', scheduled_at=$3, next_attempt_at=$3, attempts=0, last_error=NULL, updated_at=now()",
     id,
@@ -444,6 +520,8 @@ postsRouter.post("/:id/publish-now", requirePerm("posts.schedule"), async (req, 
   const allowed = ["approved", "scheduled"];
   requireStatus(post, allowed, "published now");
   if (!post.approved_by) throw conflict("This post needs approval first.");
+  await requirePlatformsReady(post);
+  await resetFailedTargets(id);
   await guarded("UPDATE posts SET status='scheduled', scheduled_at=now(), next_attempt_at=now(), attempts=0, last_error=NULL, updated_at=now()", id, allowed, [], "published now");
   await review(id, req, "scheduled", "Publish now");
   await audit(req, "post.publish_now", "post", id);
@@ -465,6 +543,9 @@ postsRouter.post("/:id/retry", requirePerm("posts.schedule"), async (req, res) =
   const post = await load(id);
   requireStatus(post, ["failed"], "retried");
   if (!post.approved_by) throw conflict("This post needs approval again before it can be retried.");
+  await requirePlatformsReady(post);
+  // Only the platforms that failed are tried again; ones it's already on are never posted twice.
+  await resetFailedTargets(id);
   await guarded("UPDATE posts SET status='scheduled', next_attempt_at=now(), attempts=0, last_error=NULL, updated_at=now()", id, ["failed"], [], "retried");
   await review(id, req, "scheduled", "Retry after failure");
   await audit(req, "post.retry", "post", id);
@@ -479,5 +560,37 @@ postsRouter.post("/:id/cancel", requirePerm("posts.schedule"), async (req, res) 
   await guarded("UPDATE posts SET status='cancelled', next_attempt_at=NULL, updated_at=now()", id, allowed, [], "cancelled");
   await review(id, req, "cancelled");
   await audit(req, "post.cancelled", "post", id);
+  res.json({ post: await load(id) });
+});
+
+/**
+ * A platform whose post may already be live: a person checks the platform and says what they found.
+ * "posted": it's there, so mark it published (it is never sent again). "retry": it isn't, so it can be sent again.
+ */
+postsRouter.post("/:id/targets/:platform", requirePerm("posts.schedule"), async (req, res) => {
+  const id = intParam(req.params.id);
+  const { action } = parse(z.object({ action: z.enum(["posted", "retry"]) }), req.body);
+  const platform = parse(z.enum(PLATFORM_IDS), req.params.platform);
+  const post = await load(id);
+  requireStatus(post, ["failed", "approved", "scheduled", "cancelled"], "changed");
+  const rows = await q(
+    action === "posted"
+      ? "UPDATE post_targets SET status='published', uncertain=false, last_error=NULL, published_at=COALESCE(published_at, now()), updated_at=now() WHERE post_id=$1 AND platform=$2 AND status='failed' RETURNING id"
+      : "UPDATE post_targets SET uncertain=false, updated_at=now() WHERE post_id=$1 AND platform=$2 AND status='failed' RETURNING id",
+    [id, platform],
+  );
+  if (!rows.length) throw conflict("That platform isn't waiting for a check any more. Reload to see the latest.");
+  // Everything is out now: the post counts as published.
+  if (action === "posted") {
+    const left = await one<{ n: number }>("SELECT count(*)::int AS n FROM post_targets WHERE post_id=$1 AND status <> 'published'", [id]);
+    if (!left?.n)
+      await q(
+        "UPDATE posts SET status='published', published_at=COALESCE(published_at, now()), last_error=NULL, next_attempt_at=NULL, updated_at=now() WHERE id=$1 AND status='failed'",
+        [id],
+      );
+  }
+  const name = PLATFORM_LABEL[platform];
+  await review(id, req, "comment", action === "posted" ? `Checked ${name}: the post is there.` : `Checked ${name}: the post isn't there, so it can be sent again.`);
+  await audit(req, "post.target_checked", "post", id, { platform, action });
   res.json({ post: await load(id) });
 });

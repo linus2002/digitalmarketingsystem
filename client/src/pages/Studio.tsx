@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { bizToday } from "../lib/format";
 import { useToast } from "../components/Toast";
 import { Alert, Button, Check, Empty, Modal, PageHead, Seg, SelectField, TextArea, TextField, Tag } from "../components/ui";
+import { LeaveGuard } from "../components/LeaveGuard";
 import "../styles/content.css";
 
 type Kind = "captions" | "campaign_ideas" | "hashtags" | "image_prompts";
@@ -126,6 +127,8 @@ export function StudioPage() {
     if (brand.data) setAddDisclaimer(Boolean(brand.data.brand.requiredDisclaimer));
   }, [brand.data]);
   const [saving, setSaving] = useState<number | null>(null);
+  // Generated results live only on this page: warn before leaving, except when leaving to open what was just saved.
+  const leaving = useRef(false);
   const [toBatch, setToBatch] = useState<Item | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // Stop a running generation if the person leaves the page.
@@ -173,6 +176,7 @@ export function StudioPage() {
         },
       });
       toast.ok("Saved as a draft", "Edit it, then send it for approval.");
+      leaving.current = true;
       nav(`/posts/${r.post.id}`);
     } catch (e) {
       toast.err("Couldn't save the draft", (e as Error).message);
@@ -197,6 +201,7 @@ export function StudioPage() {
         },
       });
       toast.ok("Campaign created");
+      leaving.current = true;
       nav(`/campaigns/${r.campaign.id}`);
     } catch (e) {
       toast.err("Couldn't create the campaign", (e as Error).message);
@@ -214,6 +219,7 @@ export function StudioPage() {
 
   return (
     <>
+      <LeaveGuard when={() => !!items?.length && !leaving.current} message="The AI's results on this page aren't saved anywhere. Leave without saving them?" />
       <PageHead
         title="AI content studio"
         sub={`Original captions, campaign ideas, hashtags and image prompts${ai ? ` from ${ai.label}` : ""}, written to your brand guidelines. Everything is saved as a draft for a person to check and approve.`}
@@ -417,7 +423,7 @@ export function StudioPage() {
           </p>
         </aside>
       </div>
-      {toBatch && <AddToBatch item={toBatch} input={resultInput} onClose={() => setToBatch(null)} />}
+      {toBatch && <AddToBatch item={toBatch} input={resultInput} onClose={() => setToBatch(null)} onLeave={() => (leaving.current = true)} />}
     </>
   );
 }
@@ -442,7 +448,7 @@ interface BatchSummary {
 }
 
 /** Sends a caption's topic and notes to an AI bots batch as a brief, so the bot writes it with the rest of the batch. */
-function AddToBatch({ item, input, onClose }: { item: Item; input: Input; onClose: () => void }) {
+function AddToBatch({ item, input, onClose, onLeave }: { item: Item; input: Input; onClose: () => void; onLeave: () => void }) {
   const toast = useToast();
   const nav = useNavigate();
   const overview = useLoad(() => api<{ batches: BatchSummary[] }>("/bots/overview"), []);
@@ -476,6 +482,7 @@ function AddToBatch({ item, input, onClose }: { item: Item; input: Input; onClos
       await api(`/bots/batches/${id}/items`, { body: { items: [{ title: (item.title || input.topic).slice(0, 200), brief, media_type: "none" }] } });
       toast.ok("Added to the batch", "The bot writes its caption when the batch runs.");
       onClose();
+      onLeave();
       nav("/bots");
     } catch (e) {
       toast.err("Couldn't add it to the batch", (e as Error).message);

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { fmtDate } from "../lib/format";
+import { PLATFORM, PlatformIcon, type PlatformKey } from "../components/Platforms";
 import { Button, Empty, LoadError, PageHead, Seg, SelectField, Skeleton, Tag, TextField } from "../components/ui";
 
 const LOG_TONE: Record<string, { label: string; tone: "good" | "warn" | "bad" | "info" }> = {
@@ -21,7 +22,7 @@ export function PublishLogPage() {
   };
   const { data, error, loading, reload } = useLoad(
     () =>
-      api<{ logs: { id: number; post_id: number | null; post_title: string | null; attempt: number; status: string; message: string; created_at: string }[]; hasMore?: boolean }>(
+      api<{ logs: { id: number; post_id: number | null; post_title: string | null; attempt: number; status: string; message: string; created_at: string; platform?: string | null }[]; hasMore?: boolean }>(
         "/logs/publishing",
         { query: { status, limit: PAGE, offset } },
       ),
@@ -30,8 +31,8 @@ export function PublishLogPage() {
   return (
     <>
       <PageHead
-        title="Publishing log"
-        sub="Every attempt to publish to Facebook. Temporary errors are retried automatically (1, 2, 4, 8 minutes…); permission or content errors stop at once."
+        title="Publish log"
+        sub="Every attempt to publish, per platform. Temporary errors are retried automatically (1, 2, 4, 8 minutes…); permission or content errors stop at once."
         actions={
           <Seg
             label="Filter"
@@ -59,7 +60,7 @@ export function PublishLogPage() {
                 <tr>
                   <th>When</th>
                   <th>Post</th>
-                  <th>Attempt</th>
+                  <th>Platform</th>
                   <th>Result</th>
                   <th>Details</th>
                 </tr>
@@ -68,8 +69,17 @@ export function PublishLogPage() {
                 {data.logs.map((l) => (
                   <tr key={l.id}>
                     <td className="nowrap">{fmtDate(l.created_at, true)}</td>
-                    <td>{l.post_id ? <Link className="name" to={`/posts/${l.post_id}`}>{l.post_title}</Link> : <span className="muted">Deleted post</span>}</td>
-                    <td>{l.attempt}</td>
+                    <td>{l.post_id ? <Link className="name" to={`/posts/${l.post_id}`} state={{ from: { to: "/logs/publishing", label: "Publish log" } }}>{l.post_title}</Link> : <span className="muted">Deleted post</span>}</td>
+                    <td className="nowrap">
+                      {l.platform && PLATFORM[l.platform as PlatformKey] ? (
+                        <span className="pf-label">
+                          <PlatformIcon p={l.platform as PlatformKey} size={18} />
+                          {PLATFORM[l.platform as PlatformKey].short}
+                        </span>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
                     <td>
                       <Tag tone={LOG_TONE[l.status]?.tone ?? "mute"} dot>
                         {LOG_TONE[l.status]?.label ?? l.status}
@@ -208,7 +218,7 @@ const AREAS = [
   { value: "analytics", label: "Analytics" },
   { value: "report", label: "Reports" },
   { value: "lead", label: "Inquiries" },
-  { value: "template", label: "Response templates" },
+  { value: "template", label: "Reply templates" },
   { value: "retention", label: "Data clean-up" },
 ];
 
@@ -316,7 +326,7 @@ export function AuditLogPage() {
                       {l.entity === "lead" && l.entity_id ? (
                         <Link to={`/leads/${l.entity_id}`}>INQ-{l.entity_id.padStart(6, "0")}</Link>
                       ) : l.entity === "post" && l.entity_id ? (
-                        <Link to={`/posts/${l.entity_id}`}>Post {l.entity_id}</Link>
+                        <Link to={`/posts/${l.entity_id}`} state={{ from: { to: "/logs/audit", label: "Audit log" } }}>Post {l.entity_id}</Link>
                       ) : l.entity === "campaign" && l.entity_id ? (
                         <Link to={`/campaigns/${l.entity_id}`}>Campaign {l.entity_id}</Link>
                       ) : l.entity ? (

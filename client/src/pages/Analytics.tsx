@@ -69,8 +69,8 @@ export function AnalyticsPage() {
   return (
     <>
       <PageHead
-        title="Facebook analytics"
-        sub={data?.pageName ? `${data.pageName}: reach, engagement and post performance from the Meta Graph API.` : "Reach, engagement and post performance from the Meta Graph API."}
+        title="Page analytics"
+        sub={data?.pageName ? `Facebook Page ${data.pageName}: reach, engagement and post performance from the Meta Graph API.` : "Facebook Page reach, engagement and post performance from the Meta Graph API."}
         actions={
           <>
             <Seg label="Period" value={days} onChange={setDays} options={[{ value: "7", label: "7 days" }, { value: "28", label: "28 days" }, { value: "90", label: "90 days" }]} />

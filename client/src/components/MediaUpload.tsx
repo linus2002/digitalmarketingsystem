@@ -3,7 +3,7 @@ import { Icon } from "./Icons";
 import { Button } from "./ui";
 import "../styles/media.css";
 
-// Upload an image or video from this computer. The file is stored by our server and sent to Facebook
+// Upload an image or video from this computer. The file is stored by our server and sent to the platforms
 // directly when the post is published, so it doesn't need to be on a public website.
 
 export interface UploadedMedia {
@@ -11,6 +11,8 @@ export interface UploadedMedia {
   kind: "image" | "video";
   name: string;
   size?: number;
+  /** The type the server found in the file itself (not from its name). */
+  mime?: string | null;
 }
 
 const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif"];
@@ -42,7 +44,7 @@ export function uploadMedia(file: File, onProgress?: (pct: number) => void): Pro
     xhr.setRequestHeader("X-Filename", encodeURIComponent(file.name));
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(Math.round((e.loaded / e.total) * 100));
     xhr.onload = () => {
-      let data: { media?: { id: number; kind: "image" | "video"; original_name: string; size_bytes: number }; error?: string } = {};
+      let data: { media?: { id: number; kind: "image" | "video"; mime?: string; original_name: string; size_bytes: number }; error?: string } = {};
       try {
         data = JSON.parse(xhr.responseText);
       } catch {
@@ -50,7 +52,7 @@ export function uploadMedia(file: File, onProgress?: (pct: number) => void): Pro
       }
       if (xhr.status === 401) window.dispatchEvent(new Event("session-expired"));
       if (xhr.status >= 200 && xhr.status < 300 && data.media) {
-        resolve({ id: data.media.id, kind: data.media.kind, name: data.media.original_name, size: Number(data.media.size_bytes) });
+        resolve({ id: data.media.id, kind: data.media.kind, name: data.media.original_name, size: Number(data.media.size_bytes), mime: data.media.mime ?? null });
       } else {
         reject(new Error(data.error ?? (xhr.status === 413 ? "The file is too big." : `Upload failed (${xhr.status}).`)));
       }
@@ -163,7 +165,7 @@ export function MediaUpload({ value, onChange, disabled, label = "Image or video
               <button type="button" className="linkish" disabled={disabled} onClick={() => input.current?.click()}>
                 choose one from your computer
               </button>
-              <span className="media-hint">JPG, PNG or GIF up to 10 MB · MP4 or MOV up to 100 MB. It's sent to Facebook with the post.</span>
+              <span className="media-hint">JPG, PNG or GIF up to 10 MB · MP4 or MOV up to 100 MB. It's sent with the post to each platform.</span>
             </div>
           </>
         )}

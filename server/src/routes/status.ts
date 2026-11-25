@@ -61,7 +61,9 @@ statusRouter.get("/badges", async (req, res) => {
     const r = await one<{ n: number }>(
       `SELECT count(*)::int AS n FROM leads l
        WHERE (l.needs_review OR EXISTS (SELECT 1 FROM lead_messages m WHERE m.lead_id = l.id AND m.status = 'pending_review'))
-         AND l.status NOT IN ('closed','awaiting_consent','collecting') AND l.anonymized_at IS NULL
+         AND l.status <> 'closed' AND l.anonymized_at IS NULL
+         -- not before consent, except deletion requests (people who see all inquiries get those), as in scopeSql
+         AND (l.status NOT IN ('awaiting_consent','collecting') OR ($1 AND l.category = 'privacy_request'))
          AND ($1 OR l.assigned_to = $2 OR (l.assigned_to IS NULL AND l.consent_given AND NOT l.needs_review))`,
       [all, u.id],
     );

@@ -62,23 +62,31 @@ export interface ScheduleRules {
   days: "daily" | "weekdays" | "mwf" | "custom";
   customDays: number[]; // 0 = Sunday
   startDate: string | null; // YYYY-MM-DD, Philippine date; null = today
-  mode: "auto" | "times";
+  /**
+   * smart: the bot decides. Fewer than SMART_ONE_DAY posts all go out on one day, spread across the window;
+   * more are spaced out at perDay a day. auto: always perDay a day. times: the times listed.
+   */
+  mode: "smart" | "auto" | "times";
   times: string[]; // HH:MM, used in "times" mode
-  windowStart: string; // HH:MM, used in "auto" mode
+  windowStart: string; // HH:MM, used in "smart" and "auto" mode
   windowEnd: string;
   perDay: number;
   minGapMinutes: number;
+  /** The clock days and times are read in. The audience may be abroad; defaults to Philippine time. */
+  timeZone: string;
 }
+export const SMART_ONE_DAY = 10;
 export const DEFAULT_SCHEDULE: ScheduleRules = {
   days: "daily",
   customDays: [1, 3, 5],
   startDate: null,
-  mode: "auto",
+  mode: "smart",
   times: ["09:00", "12:00", "18:00"],
   windowStart: "09:00",
   windowEnd: "20:00",
   perDay: 3,
   minGapMinutes: 60,
+  timeZone: "Asia/Manila",
 };
 export const scheduleOf = (batch: Row): ScheduleRules => ({ ...DEFAULT_SCHEDULE, ...(batch.schedule ?? {}) });
 
@@ -101,7 +109,36 @@ export async function activity(bot: BotName, message: string, opts: { batchId?: 
 
 const PH_OFFSET_MS = 8 * 3_600_000;
 export const phDate = (d: Date) => new Date(d.getTime() + PH_OFFSET_MS).toISOString().slice(0, 10);
-const phAt = (date: string, hhmm: string) => new Date(`${date}T${hhmm}:00+08:00`);
+
+// ---------------------------------------------------------------- any time zone (for audiences abroad)
+
+export function isTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+/** How far the zone's clock is ahead of UTC at that moment, in ms (handles daylight saving). */
+function tzOffset(at: number, tz: string): number {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      .formatToParts(new Date(at))
+      .map((x) => [x.type, x.value]),
+  );
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - Math.floor(at / 1000) * 1000;
+}
+/** The moment it's `hhmm` on `date` in that zone. */
+export function zonedAt(date: string, hhmm: string, tz: string): Date {
+  if (tz === "Asia/Manila") return new Date(`${date}T${hhmm}:00+08:00`);
+  const wall = Date.parse(`${date}T${hhmm}:00Z`);
+  let at = wall - tzOffset(wall, tz);
+  at = wall - tzOffset(at, tz); // second pass settles daylight-saving changes
+  return new Date(at);
+}
+/** Today's date (YYYY-MM-DD) in that zone. */
+export const todayIn = (tz: string) => new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 const addDays = (date: string, n: number) => new Date(Date.parse(`${date}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
 const weekday = (date: string) => new Date(`${date}T12:00:00+08:00`).getUTCDay();
 const toMin = (hhmm: string) => {
@@ -121,8 +158,10 @@ function dayAllowed(r: ScheduleRules, date: string): boolean {
 }
 
 /** The posting times for one day, in HH:MM. Always inside [windowStart, windowEnd] and never past 23:59. */
-export function daySlots(r: ScheduleRules): string[] {
+export function daySlots(r: ScheduleRules, count = 0): string[] {
   if (r.mode === "times") return [...new Set(r.times)].sort().slice(0, 20);
+  // The bot decides: a small batch goes out in one day, a big one is spaced out over several.
+  if (r.mode === "smart") return daySlots({ ...r, mode: "auto", perDay: count > 0 && count < SMART_ONE_DAY ? count : r.perDay });
   const start = Math.min(toMin(r.windowStart), 23 * 60 + 59);
   const end = Math.min(Math.max(start, toMin(r.windowEnd)), 23 * 60 + 59);
   const n = Math.max(1, Math.min(100, r.perDay));
@@ -333,18 +372,33 @@ export async function scheduleBatch(batchId: number, userId: number | null) {
   const gap = Math.max(0, r.minGapMinutes) * 60_000;
   const taken: Date[] = [...(await bookedTimes(batchId)).map((b) => b.at), ...todo.filter((i) => i.time_locked && i.scheduled_at).map((i) => new Date(i.scheduled_at))];
   const free = todo.filter((i) => !i.time_locked);
-  const slots = daySlots(r);
+  const slots = daySlots(r, free.length);
+  const tz = isTimeZone(r.timeZone) ? r.timeZone : "Asia/Manila";
   const earliest = Date.now() + 15 * 60_000;
   const clashes = (t: Date) => taken.some((x) => Math.abs(x.getTime() - t.getTime()) < Math.max(gap, 60_000));
 
-  let date = r.startDate && r.startDate > phDate(new Date()) ? r.startDate : phDate(new Date());
+  const today = todayIn(tz);
+  // "Let the bot decide" with a small batch: everything goes out on one day. If that day is today, the posts are
+  // spread over what's left of today's window (from 15 minutes from now), not the whole window, so none spill over
+  // to tomorrow. If today's window is already over, the first allowed day gets the whole window.
+  const oneDay = r.mode === "smart" && free.length > 0 && free.length < SMART_ONE_DAY;
+  const slotsFor = (date: string): string[] => {
+    if (!oneDay || date !== today) return slots;
+    const p = Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date()).map((x) => [x.type, x.value]),
+    );
+    const from = Math.ceil((Number(p.hour) * 60 + Number(p.minute) + 16) / 5) * 5;
+    if (from > toMin(r.windowEnd)) return [];
+    return daySlots({ ...r, mode: "auto", windowStart: fromMin(Math.max(toMin(r.windowStart), from)), perDay: free.length });
+  };
+  let date = r.startDate && r.startDate > today ? r.startDate : today;
   const assigned: { id: number; at: Date }[] = [];
   let k = 0;
   for (let d = 0; d < 400 && k < free.length; d++, date = addDays(date, 1)) {
     if (!dayAllowed(r, date)) continue;
-    for (const s of slots) {
+    for (const s of slotsFor(date)) {
       if (k >= free.length) break;
-      const at = phAt(date, s);
+      const at = zonedAt(date, s, tz);
       if (at.getTime() < earliest || clashes(at)) continue;
       assigned.push({ id: free[k++].id, at });
       taken.push(at);
@@ -361,7 +415,10 @@ export async function scheduleBatch(batchId: number, userId: number | null) {
   if (assigned.length) {
     const first = assigned[0].at;
     const last = assigned[assigned.length - 1].at;
-    await activity("scheduler", `Picked times for ${assigned.length} post${assigned.length === 1 ? "" : "s"}: ${fmtPh(first)}${assigned.length > 1 ? ` to ${fmtPh(last)}` : ""}.`, {
+    // In the batch's own clock, and saying which clock, so "9:00 AM New York" doesn't read as a Manila night post.
+    const fmt = (d: Date) => new Intl.DateTimeFormat("en-PH", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(d);
+    const zone = tz === "Asia/Manila" ? "Philippine time" : `${tz.replace(/_/g, " ")} time`;
+    await activity("scheduler", `Picked times for ${assigned.length} post${assigned.length === 1 ? "" : "s"}: ${fmt(first)}${assigned.length > 1 ? ` to ${fmt(last)}` : ""} (${zone}).`, {
       batchId,
       level: "good",
       userId,
@@ -379,7 +436,7 @@ export interface Issue {
   text: string;
 }
 
-function mediaProblem(url: string | null, type: string): Issue | null {
+export function mediaProblem(url: string | null, type: string): Issue | null {
   if (type === "none") return null;
   if (!url) return { level: "bad", text: `Add the ${type} link, or set the media to "None".` };
   let u: URL;
@@ -771,6 +828,8 @@ export async function handOff(batchId: number, user: { id: number; role: string 
         ],
         c,
       );
+      // Bot batches post to the Facebook Page; more platforms can be ticked on the post before it goes out.
+      await q("INSERT INTO post_targets (post_id, platform) VALUES ($1, 'facebook') ON CONFLICT DO NOTHING", [post!.id], c);
       const note = `Sent by the Posting Bot from the batch "${batch.name}". Planned for ${fmtPh(at)} (Philippine time).`;
       if (mode === "schedule") {
         await q("INSERT INTO post_reviews (post_id, user_id, decision, comment) VALUES ($1,$2,'approved',$3)", [post!.id, user.id, note], c);

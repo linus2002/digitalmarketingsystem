@@ -261,9 +261,9 @@ export function Ring({ pct }: { pct: number }) {
   const p = Math.max(0, Math.min(100, pct));
   return (
     <svg className="ring" viewBox="0 0 44 44" role="img" aria-label={`${Math.round(p)}%`}>
-      <circle cx="22" cy="22" r="17" fill="none" stroke="#d9e6fd" strokeWidth="5" />
-      <circle cx="22" cy="22" r="17" fill="none" stroke="#1f5fd6" strokeWidth="5" strokeLinecap="round" strokeDasharray={`${(p / 100) * c} ${c}`} transform="rotate(-90 22 22)" />
-      <text x="22" y="25.5" textAnchor="middle" fontSize="10" fontWeight="600" fill="#141414" fontFamily="Poppins">
+      <circle cx="22" cy="22" r="17" fill="none" stroke="var(--mint-2)" strokeWidth="5" />
+      <circle cx="22" cy="22" r="17" fill="none" stroke="var(--primary)" strokeWidth="5" strokeLinecap="round" strokeDasharray={`${(p / 100) * c} ${c}`} transform="rotate(-90 22 22)" />
+      <text x="22" y="25.5" textAnchor="middle" fontSize="10" fontWeight="600" fill="var(--ink)" fontFamily="Poppins">
         {Math.round(p)}%
       </text>
     </svg>
@@ -609,6 +609,7 @@ export function ConfirmModal({
   children,
   confirmWord,
   confirmLabel,
+  cancelLabel = "Cancel",
   onConfirm,
   onClose,
   busy,
@@ -618,6 +619,8 @@ export function ConfirmModal({
   children?: ReactNode;
   confirmWord?: string;
   confirmLabel: string;
+  /** The button that closes without doing it. Use something like "Keep it" when the action itself is a cancel. */
+  cancelLabel?: string;
   onConfirm: () => void;
   onClose: () => void;
   busy?: boolean;
@@ -632,7 +635,7 @@ export function ConfirmModal({
       actions={
         <>
           <Button variant="quiet" onClick={onClose}>
-            Cancel
+            {cancelLabel}
           </Button>
           <Button variant="danger" disabled={!ok} loading={busy} onClick={onConfirm}>
             {confirmLabel}

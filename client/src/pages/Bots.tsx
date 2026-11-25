@@ -7,9 +7,14 @@ import { useAuth } from "../lib/auth";
 import { useToast } from "../components/Toast";
 import { ago, bizToday, BUSINESS_TZ_LABEL, fmtBiz, fmtDate, fromBizInput, POST_STATUS, toBizInput } from "../lib/format";
 import { Alert, Button, Check, ConfirmModal, Empty, IconButton, LoadError, Modal, PageHead, Seg, SelectField, Skeleton, StatusTag, Steps, Switch, Tabs, Tag, TextArea, TextField } from "../components/ui";
-import { BOT_ORDER, BOTS, BotFace, BotFlow, FLOW, type BotName, type BotView } from "../components/BotArt";
+import { BOT_ORDER, BOTS, BotFace, FLOW, type BotName, type BotView } from "../components/BotArt";
+import { FlowMap } from "../components/FlowMap";
+import { TeamWatch, useTeamWatch, type TeamData } from "../components/BotWatch";
+import { BoldField } from "../components/TextFormat";
+import { toFacebookText } from "../lib/fbText";
 import { BotOffice } from "../components/OfficeScene";
 import { LeaveGuard } from "../components/LeaveGuard";
+import { docxText } from "../lib/docxText";
 import "../styles/bots.css";
 
 // ---------------------------------------------------------------- types
@@ -80,12 +85,13 @@ interface Schedule {
   days: "daily" | "weekdays" | "mwf" | "custom";
   customDays: number[];
   startDate: string | null;
-  mode: "auto" | "times";
+  mode: "smart" | "auto" | "times";
   times: string[];
   windowStart: string;
   windowEnd: string;
   perDay: number;
   minGapMinutes: number;
+  timeZone?: string;
 }
 interface BatchData {
   batch: { id: number; name: string; checked_at: string | null; handed_off_at: string | null; campaign_id: number | null };
@@ -155,7 +161,7 @@ function aiReason(o: Overview, admin: boolean) {
 
 // ---------------------------------------------------------------- what each bot is doing
 
-function botViews(ov: Overview, data: BatchData | null): Record<BotName, BotView> {
+function botViews(ov: Overview, data: BatchData | null, team: TeamData | null): Record<BotName, BotView> {
   const pending = (data?.items ?? []).filter((i) => !handed(i));
   const blocked = pending.filter((i) => i.issues.some((x) => x.level === "bad")).length;
   const failed = ov.outcomes.failed ?? 0;
@@ -186,6 +192,11 @@ function botViews(ov: Overview, data: BatchData | null): Record<BotName, BotView
         ? { mood: "neutral", state: "idle", task: `Ready to hand off ${pending.length}` }
         : { mood: "happy", state: "idle", task: (ov.outcomes.scheduled ?? 0) ? `${ov.outcomes.scheduled} posts lined up` : "On a coffee break" },
   };
+  // Work on the team's own posts (not a batch): the Editor or Checker Bot checking one, the Posting Bot posting one.
+  if (team?.live) v[team.live.bot] = { mood: "focus", state: "working", task: `${team.live.task}: "${team.live.title}"` };
+  else if (team?.queue) v.checker = { mood: "determined", state: "working", task: `${team.queue} team post${team.queue === 1 ? "" : "s"} to check` };
+  const posting = team?.posts.find((p) => p.status === "publishing");
+  if (posting) v.posting = { mood: "focus", state: "working", task: `Posting "${posting.title}"` };
   const active = run ?? ov.running[0] ?? null;
   if (active) {
     const b = RUN_BOT[active.step];
@@ -219,6 +230,7 @@ export function BotsPage() {
   const { can, user } = useAuth();
   const toast = useToast();
   const ov = useLoad(() => api<Overview>("/bots/overview"), []);
+  const team = useTeamWatch();
   const [batchId, setBatchId] = useState<number | null>(storedBatch());
   // The loaded batch carries the id it was loaded for, so a stale result is never mistaken for the current one.
   const batch = useLoad(
@@ -290,14 +302,21 @@ export function BotsPage() {
 
   // Pick a batch when none is chosen, or when the remembered one no longer exists. A remembered batch that is
   // simply older than the newest 50 stays selected (it's loaded directly).
+  // Batches known to be deleted (here or by someone else) are never picked again, even while the overview still lists
+  // them, so a deleted batch doesn't flash back or get asked for over and over.
+  const gone = useRef(new Set<number>());
   useEffect(() => {
     if (!ov.data) return;
-    const first = ov.data.batches[0]?.id ?? null;
+    const first = ov.data.batches.find((b) => !gone.current.has(b.id))?.id ?? null;
     if (!batchId) {
       if (first) choose(first);
       return;
     }
-    if (batch.data && batch.data.id === batchId && batch.data.d === null) choose(first === batchId ? null : first);
+    if (batch.data && batch.data.id === batchId && batch.data.d === null) {
+      gone.current.add(batchId);
+      choose(first === batchId ? null : first);
+      void ov.reload();
+    }
   }, [ov.data, batchId, batch.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const data = batch.data && batch.data.id === batchId ? batch.data.d : null;
@@ -324,7 +343,7 @@ export function BotsPage() {
     );
 
   const o = ov.data;
-  const views = botViews(o, data);
+  const views = botViews(o, data, team);
   const stage = flowStage(o, data);
 
   return (
@@ -332,11 +351,11 @@ export function BotsPage() {
       <LeaveGuard when={() => dirtyRef.current} message="You have unsaved bot settings. Leave without saving?" />
       <PageHead
         title="AI bots"
-        sub="Five bots that turn your notes into scheduled Facebook posts: one writes captions, one learns your style, one picks times, one checks everything and one hands the posts over. Another manager still approves every post."
+        sub="Six bots that turn your notes into scheduled posts: one writes captions, one learns your style, one revises to your standards, one picks times, one checks everything and one hands the posts over. Another manager still approves every post."
       />
       {o.dryRun && (
         <div style={{ marginBottom: 16 }}>
-          <Alert tone="info" title="Test mode">Posts the bots line up go through the whole workflow, but nothing is sent to Facebook while Test mode is on.</Alert>
+          <Alert tone="info" title="Test mode">Posts the bots line up go through the whole workflow, but nothing is sent to any platform while Test mode is on.</Alert>
         </div>
       )}
 
@@ -414,6 +433,7 @@ export function BotsPage() {
               onChange={refresh}
               setBatch={(d) => batch.setData({ id: d.batch.id, d })}
               onDeleted={() => {
+                if (batchId) gone.current.add(batchId);
                 choose(null);
                 void ov.reload();
               }}
@@ -424,6 +444,8 @@ export function BotsPage() {
           <BotPanel bot={bot} view={views[bot]} o={o} data={data} editable={editable} canBrand={canBrand} admin={admin} onChange={refresh} onDirty={setDirty} />
         </aside>
       </div>
+
+      <TeamWatch data={team} />
 
       <section className="board mt24">
         <h2 className="section">What the bots did</h2>
@@ -485,39 +507,12 @@ function FlowView({ stage, onPick }: { stage: number; onPick: (b: BotName) => vo
     style: "Learns your team's writing from old captions, so every new caption sounds like you.",
     caption: "Writes each caption with search keyword phrases, following the Team rules and the brand guidelines.",
     editor: "Checks each caption against your standards (length, hook, call to action, words to use or avoid…) and revises it. You accept or reject each revision, unless auto-revise is on.",
-    schedule: "Spreads the posts over the days you choose, in Philippine time, without clashing with posts already booked.",
-    check: "Flags past times, clashes, posts too close together, brand-rule problems and media Facebook can't reach.",
+    schedule: "Spreads the posts over the days you choose, in the time zone you pick (Philippine time by default), without clashing with posts already booked.",
+    check: "Flags past times, clashes, posts too close together, brand-rule problems and media the platforms can't reach.",
     handoff: "Turns each ready post into a real post and sends it for review (an administrator can schedule directly).",
     publish: "Another manager approves each post (you can't approve posts you handed off). It's published on the Page at its planned time, and the Checker Bot follows up.",
   };
-  return (
-    <div className="flow-wrap">
-      <BotFlow current={stage} done={stage} />
-      <ol className="flow-cards">
-        {FLOW.map((f, i) => {
-          const b = f.bot !== "you" && f.bot !== "team" ? f.bot : null;
-          return (
-            <li key={f.key} className={i === stage ? "now" : i < stage ? "done" : ""}>
-              <span className="flow-n">{i < stage ? "✓" : i + 1}</span>
-              <div className="grow">
-                <b>{f.title}</b>
-                <p>{text[f.key]}</p>
-                <div className="flow-who">
-                  {b ? (
-                    <button type="button" className="linkish" onClick={() => onPick(b)}>
-                      <BotFace bot={b} size={26} /> {BOTS[b].name}
-                    </button>
-                  ) : (
-                    <span className="meta">{f.bot === "you" ? "You" : "Another marketing manager"}</span>
-                  )}
-                </div>
-              </div>
-            </li>
-          );
-        })}
-      </ol>
-    </div>
-  );
+  return <FlowMap stage={stage} onPick={onPick} text={text} />;
 }
 
 // ---------------------------------------------------------------- batches
@@ -663,7 +658,9 @@ function Workspace({
   const aiDown = aiReason(o, admin);
   // Without the AI, "Run all bots" can still pick times and check when every post already has a caption.
   const allCaptioned = pending.every((i) => !!i.caption?.trim());
-  const runAllSteps = !aiDown ? ["caption", "schedule", "check"] : allCaptioned && !recaption ? ["schedule", "check"] : null;
+  // The Editor Bot runs between captions and scheduling, so captions that fall short of the standards are revised
+  // (or suggested) before the Checker Bot. Without the AI, the "rewrite captions" tick (hidden then) doesn't count.
+  const runAllSteps = !aiDown ? ["caption", "edit", "schedule", "check"] : allCaptioned ? ["schedule", "check"] : null;
 
   async function act(label: string, fn: () => Promise<unknown>, ok?: string) {
     setBusy(label);
@@ -677,7 +674,7 @@ function Workspace({
       setBusy(null);
     }
   }
-  const runBots = (steps: string[], label: string) => act(label, () => api(`/bots/batches/${data.batch.id}/run`, { body: { steps, recaption } }));
+  const runBots = (steps: string[], label: string) => act(label, () => api(`/bots/batches/${data.batch.id}/run`, { body: { steps, recaption: recaption && !aiDown } }));
   const move = (i: number, dir: -1 | 1) => {
     const ids = items.map((x) => x.id);
     const j = i + dir;
@@ -965,31 +962,29 @@ function AddPosts({ batchId, disabled, onAdded }: { batchId: number; disabled: b
             error={briefErr}
             hint={`Notes, key points, or paste the video's transcript (up to ${BRIEF_MAX.toLocaleString("en")} characters). The Caption Bot writes from this.`}
           />
-          <div className="grid g2">
-            <div>
-              <p className="lab-sm">Media</p>
-              <Seg
-                label="Media type"
-                value={mediaType}
-                onChange={pickMedia}
-                options={[
-                  { value: "none", label: "None" },
-                  { value: "upload", label: "Upload" },
-                  { value: "image", label: "Image link" },
-                  { value: "video", label: "Video link" },
-                ]}
-              />
-            </div>
-            {(mediaType === "image" || mediaType === "video") && (
+          <div>
+            <p className="lab-sm">Media</p>
+            <Seg
+              label="Media type"
+              value={mediaType}
+              onChange={pickMedia}
+              options={[
+                { value: "none", label: "None" },
+                { value: "upload", label: "Upload" },
+                { value: "image", label: "Image link" },
+                { value: "video", label: "Video link" },
+              ]}
+            />
+          </div>
+          {(mediaType === "image" || mediaType === "video") && (
               <TextField
                 label={`${mediaType === "video" ? "Video" : "Image"} link`}
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="https://… (public link)"
-                hint={mediaType === "video" ? "A direct .mp4 or .mov link Facebook can download." : "A public image link."}
+                hint={mediaType === "video" ? "A direct .mp4 or .mov link the platforms can download." : "A public image link."}
               />
-            )}
-          </div>
+          )}
           {mediaType === "upload" && <MediaUpload value={uploaded} onChange={setUploaded} label="Upload an image or video" />}
         </>
       ) : (
@@ -1045,7 +1040,7 @@ function ItemCard({ it, n, checked, last, locked, onMove, onEdit, onDelete, onRe
         {it.scheduled_at ? ` (${BUSINESS_TZ_LABEL})` : ""}
         {it.scheduled_at && it.time_locked && !done ? " · set by you" : ""}
       </p>
-      {it.caption ? <p className="pre clamp-4">{it.caption}</p> : <p className="muted clamp">{it.brief}</p>}
+      {it.caption ? <p className="pre clamp-4">{toFacebookText(it.caption)}</p> : <p className="muted clamp">{it.brief}</p>}
       {it.caption_error && !it.caption && <Alert tone="bad">The Caption Bot couldn't write this one: {it.caption_error}</Alert>}
       {it.pending_revision_id && !handed(it) && (
         <div className="ed-suggest">
@@ -1059,7 +1054,7 @@ function ItemCard({ it, n, checked, last, locked, onMove, onEdit, onDelete, onRe
         </div>
       )}
       {(it.keywords.length > 0 || it.hashtags.length > 0) && (
-        <div className="row" style={{ gap: 6 }}>
+        <div className="row mt8" style={{ gap: 6 }}>
           {it.keywords.map((k) => (
             <Tag key={k} tone="info">{k}</Tag>
           ))}
@@ -1078,7 +1073,7 @@ function ItemCard({ it, n, checked, last, locked, onMove, onEdit, onDelete, onRe
       <div className="row mt8" style={{ gap: 4 }}>
         {done ? (
           it.post_id ? (
-            <Link to={`/posts/${it.post_id}`} className="btn btn-sm btn-soft">
+            <Link to={`/posts/${it.post_id}`} className="btn btn-sm btn-soft" state={{ from: { to: "/bots", label: "AI bots" } }}>
               Open the post
             </Link>
           ) : null
@@ -1208,7 +1203,9 @@ function EditItemModal({ item, aiReady, onClose, onSaved }: { item: Item; aiRead
             Rewrite with the Caption Bot
           </Button>
         </div>
-        <TextArea label="Caption" value={f.caption} onChange={set("caption")} rows={7} />
+        <BoldField value={f.caption} onChange={(v) => setF((x) => ({ ...x, caption: v }))}>
+          <TextArea label="Caption" value={f.caption} onChange={set("caption")} rows={7} />
+        </BoldField>
         <TextField label="Keyword phrases" optional value={f.keywords} onChange={set("keywords")} hint="Separate with commas." />
         <TextField label="Hashtags" optional value={f.hashtags} onChange={set("hashtags")} />
         <div className="grid g2">
@@ -1306,7 +1303,7 @@ function HandoffModal({ data, o, onClose, onDone }: { data: BatchData; o: Overvi
       </div>
       <p className="note">
         {pending.length - blocked} of {pending.length} look ready{blocked ? `, ${blocked} need fixing` : ""}
-        {warned ? `, ${warned} have warnings for the reviewer` : ""}.{o.dryRun ? " Test mode is on, so nothing reaches Facebook." : ""}
+        {warned ? `, ${warned} have warnings for the reviewer` : ""}.{o.dryRun ? " Test mode is on, so nothing is sent to any platform." : ""}
       </p>
     </Modal>
   );
@@ -1465,7 +1462,12 @@ function StylePanel({ o, canEdit, onChange }: { o: Overview; canEdit: boolean; o
     const list = [...(e.target.files ?? [])];
     try {
       // Big files are cut: only the first 30 captions are used anyway.
-      const read = await Promise.all(list.map(async (f) => ({ name: f.name, text: (await f.text()).slice(0, STYLE_MAX_SAMPLES * STYLE_MAX_CHARS * 2) })));
+      const read = await Promise.all(
+        list.map(async (f) => ({
+          name: f.name,
+          text: (/\.docx$/i.test(f.name) ? await docxText(f) : await f.text()).slice(0, STYLE_MAX_SAMPLES * STYLE_MAX_CHARS * 2),
+        })),
+      );
       setFiles((x) => [...x, ...read]);
     } catch (err) {
       toast.err("Couldn't read that file", (err as Error).message);
@@ -1522,9 +1524,15 @@ function StylePanel({ o, canEdit, onChange }: { o: Overview; canEdit: boolean; o
           />
           <label className="field">
             <span className="lab">
-              Or upload text files <em>(.txt, .md, .csv)</em>
+              Or upload files <em>(Word .docx, .txt, .md, .csv)</em>
             </span>
-            <input type="file" accept=".txt,.md,.csv,text/plain,text/markdown,text/csv" multiple onChange={pick} className="file-input" />
+            <input
+              type="file"
+              accept=".docx,.txt,.md,.csv,text/plain,text/markdown,text/csv,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              multiple
+              onChange={pick}
+              className="file-input"
+            />
           </label>
           {files.length > 0 && (
             <div className="row" style={{ gap: 6 }}>
@@ -1566,6 +1574,41 @@ function StylePanel({ o, canEdit, onChange }: { o: Overview; canEdit: boolean; o
   );
 }
 
+/** Common audience time zones first, then every zone the browser knows. */
+const COMMON_ZONES: [string, string][] = [
+  ["Asia/Manila", "Philippines (Manila)"],
+  ["Asia/Singapore", "Singapore"],
+  ["Asia/Hong_Kong", "Hong Kong"],
+  ["Asia/Tokyo", "Japan"],
+  ["Asia/Seoul", "South Korea"],
+  ["Asia/Dubai", "United Arab Emirates"],
+  ["Asia/Riyadh", "Saudi Arabia"],
+  ["Asia/Qatar", "Qatar"],
+  ["Asia/Kuwait", "Kuwait"],
+  ["Australia/Sydney", "Australia (Sydney)"],
+  ["Pacific/Auckland", "New Zealand"],
+  ["Europe/London", "United Kingdom"],
+  ["Europe/Rome", "Italy"],
+  ["America/New_York", "US East (New York)"],
+  ["America/Chicago", "US Central (Chicago)"],
+  ["America/Los_Angeles", "US West (Los Angeles)"],
+  ["America/Toronto", "Canada (Toronto)"],
+  ["America/Vancouver", "Canada (Vancouver)"],
+];
+function timeZoneOptions(current?: string) {
+  const common = COMMON_ZONES.map(([value, label]) => ({ value, label }));
+  let all: string[] = [];
+  try {
+    all = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [];
+  } catch {
+    /* older browser: the common list is enough */
+  }
+  const known = new Set(COMMON_ZONES.map(([z]) => z));
+  const rest = all.filter((z) => !known.has(z)).map((z) => ({ value: z, label: z.replace(/_/g, " ") }));
+  if (current && !known.has(current) && !all.includes(current)) rest.unshift({ value: current, label: current });
+  return [...common, ...rest];
+}
+
 function SchedulerPanel({ data, editable, onChange, onDirty }: { data: BatchData | null; editable: boolean; onChange: () => Promise<unknown>; onDirty: (d: boolean) => void }) {
   const toast = useToast();
   const [s, setS] = useState<Schedule | null>(data?.schedule ?? null);
@@ -1596,7 +1639,7 @@ function SchedulerPanel({ data, editable, onChange, onDirty }: { data: BatchData
   useEffect(() => () => onDirty(false), [onDirty]);
 
   if (!data || !s || !body) return <p className="muted">Start a batch, then tell me which days to post on.</p>;
-  const windowErr = s.mode === "auto" && s.windowEnd < s.windowStart ? "The window has to end after it starts." : undefined;
+  const windowErr = s.mode !== "times" && s.windowEnd < s.windowStart ? "The window has to end after it starts." : undefined;
   const timesErr = s.mode === "times" && parsedTimes.some((t) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) ? "Use 24-hour times like 09:00, separated by commas." : undefined;
   async function save(andRun: boolean) {
     setBusy(andRun ? "run" : "save");
@@ -1643,17 +1686,23 @@ function SchedulerPanel({ data, editable, onChange, onDirty }: { data: BatchData
         value={s.mode}
         onChange={(v) => setS({ ...s, mode: v })}
         options={[
+          { value: "smart", label: "Let the bot decide" },
           { value: "auto", label: "Space them out" },
           { value: "times", label: "Set times" },
         ]}
       />
-      {s.mode === "auto" ? (
+      {s.mode === "smart" && (
+        <p className="note mt0">
+          Fewer than 10 posts all go out on the first day, spread across the window. With 10 or more, the bot spaces them out at the number per day below.
+        </p>
+      )}
+      {s.mode !== "times" ? (
         <>
           <div className="grid g2">
             <TextField label="From" type="time" value={s.windowStart} onChange={(e) => setS({ ...s, windowStart: e.target.value })} />
             <TextField label="Until" type="time" value={s.windowEnd} error={windowErr} onChange={(e) => setS({ ...s, windowEnd: e.target.value })} />
           </div>
-          <TextField label="Posts per day" type="number" min={1} max={100} value={s.perDay} onChange={(e) => setS({ ...s, perDay: Math.max(1, Math.min(100, Number(e.target.value) || 1)) })} hint="Up to 100." />
+          <TextField label="Posts per day" type="number" min={1} max={100} value={s.perDay} onChange={(e) => setS({ ...s, perDay: Math.max(1, Math.min(100, Number(e.target.value) || 1)) })} hint={s.mode === "smart" ? "Used once a batch has 10 or more posts. Up to 100." : "Up to 100."} />
         </>
       ) : (
         <TextField label="Times each day" value={times} error={timesErr} onChange={(e) => setTimes(e.target.value)} hint="24-hour times separated by commas, up to 20. Example: 09:00, 12:30, 18:00" />
@@ -1664,7 +1713,15 @@ function SchedulerPanel({ data, editable, onChange, onDirty }: { data: BatchData
         onChange={(e) => setS({ ...s, minGapMinutes: Number(e.target.value) })}
         options={[0, 15, 30, 60, 90, 120, 180].map((m) => ({ value: m, label: m ? `${m} minutes` : "No minimum" }))}
       />
-      <p className="note mt0">All times are {BUSINESS_TZ_LABEL}. Times you set yourself on a post are kept, and posts already booked in the calendar are avoided.</p>
+      <SelectField
+        label="Time zone"
+        value={s.timeZone ?? "Asia/Manila"}
+        onChange={(e) => setS({ ...s, timeZone: e.target.value })}
+        options={timeZoneOptions(s.timeZone)}
+        hint="The clock the days and times above are read in. Pick the audience's country when posting for people abroad."
+      />
+      <p className="note mt0">
+        Days and times follow the time zone above; the calendar and posts show {BUSINESS_TZ_LABEL}. Times you set yourself on a post are kept, and posts already booked in the calendar are avoided.</p>
       <div className="row">
         <Button variant="primary" icon="cal" loading={busy === "run"} disabled={dis || !!busy || !!windowErr || !!timesErr} onClick={() => save(true)}>
           Save and pick times
@@ -1745,10 +1802,10 @@ function PostingPanel({ o, data }: { o: Overview; data: BatchData | null }) {
     <div className="stackv" style={{ gap: 14 }}>
       <p className="small mt0">
         I turn every post that passes the checks into a real post in <Link to="/posts">Posts and approvals</Link>, with its caption, hashtags, image or video and planned time. The posts are authored by whoever hands them
-        off, so another manager approves each one (you can't approve posts you handed off). It's then published to the Facebook Page at its time, with retries if Facebook has a hiccup.
+        off, so another manager approves each one (you can't approve posts you handed off). It's then published at its time (to the Facebook Page, plus any other platforms ticked on the post), with retries if a platform has a hiccup.
       </p>
       {o.canScheduleDirectly && <p className="small muted mt0">As an administrator you can also approve and schedule in one go, for posts with no warnings.</p>}
-      {o.dryRun && <Alert tone="info">Test mode is on, so nothing reaches Facebook.</Alert>}
+      {o.dryRun && <Alert tone="info">Test mode is on, so nothing is sent to any platform.</Alert>}
       {data && (
         <>
           <p className="label mb0">From this batch</p>
@@ -1759,7 +1816,7 @@ function PostingPanel({ o, data }: { o: Overview; data: BatchData | null }) {
               {done.map((i) => (
                 <li key={i.id}>
                   {i.post_id ? (
-                    <Link to={`/posts/${i.post_id}`} className="grow clamp">
+                    <Link to={`/posts/${i.post_id}`} className="grow clamp" state={{ from: { to: "/bots", label: "AI bots" } }}>
                       {i.title || i.caption?.slice(0, 60)}
                     </Link>
                   ) : (

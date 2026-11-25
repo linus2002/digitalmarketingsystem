@@ -31,6 +31,7 @@ import { notesRouter, notificationsRouter } from "./routes/notifications.js";
 import { mediaRouter } from "./routes/media.js";
 import { editorRouter } from "./routes/editor.js";
 import { statusRouter } from "./routes/status.js";
+import { oauthCallbackRouter, platformsRouter, publicMediaRouter } from "./routes/platforms.js";
 
 const app = express();
 if (env.TRUST_PROXY) app.set("trust proxy", 1);
@@ -57,6 +58,9 @@ app.use("/api/webhooks/meta", express.raw({ type: "*/*", limit: "1mb" }), metaWe
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
+// Files Instagram/TikTok download when posting, and the sign-in callbacks: no sign-in, checked inside.
+app.use("/api/public/media", publicMediaRouter);
+app.use("/api/oauth", oauthCallbackRouter);
 app.use("/api/public", cors({ origin: env.PUBLIC_FORM_ORIGINS, methods: ["GET", "POST"] }), publicRouter);
 
 app.get("/api/health", async (_req, res) => {
@@ -85,6 +89,7 @@ app.use("/api/logs", logsRouter);
 app.use("/api/leads", leadsRouter);
 app.use("/api/templates", templatesRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/platforms", platformsRouter);
 app.use("/api/bots", botsRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/notes", notesRouter);

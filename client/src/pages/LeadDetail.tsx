@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ago, BUSINESS_TZ_LABEL, CONTACT_LABEL, fmtBiz, fmtDate, fromBizInput, LEAD_STATUS, SOURCE_LABEL, toBizInput } from "../lib/format";
 import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icons";
 import { Alert, Button, ConfirmModal, LoadError, Modal, PageHead, SelectField, Skeleton, StatusTag, Tag, TextArea, TextField } from "../components/ui";
+import { LeaveGuard } from "../components/LeaveGuard";
 import "../styles/inquiries.css";
 
 interface Lead {
@@ -108,6 +109,9 @@ const STAFF_ROLES = ["pharma_team", "lead_agent", "admin"];
 export function LeadDetailPage() {
   const { id } = useParams();
   const nav = useNavigate();
+  // Back to the list as it was (filter, category, search), not the unfiltered list.
+  const fromState = (useLocation().state as { from?: { to: string; label: string } } | null)?.from;
+  const backTo = fromState?.to?.startsWith("/leads") ? fromState.to : "/leads";
   const { can, user } = useAuth();
   const toast = useToast();
   // Contacts are revealed for one inquiry only: opening another one hides them again (each reveal is audit-logged).
@@ -230,8 +234,9 @@ export function LeadDetailPage() {
 
   return (
     <>
+      <LeaveGuard when={() => !!reply.trim() || !!note.trim()} message="Your reply or note to this inquiry hasn't been sent. Leave without sending it?" />
       <PageHead
-        crumbs={[{ to: "/leads", label: "Inquiries" }, { label: lead.ref }]}
+        crumbs={[{ to: backTo, label: "Inquiries" }, { label: lead.ref }]}
         title={lead.medicine_name ?? "Inquiry"}
         sub={
           <span className="row" style={{ gap: 8 }}>
@@ -631,7 +636,7 @@ export function LeadDetailPage() {
             const ok = await act("anon", () => api(`/leads/${lead.id}/anonymize`, { body: { reason: anonReason } }), "Personal data deleted");
             if (ok) {
               setAnonymise(false);
-              nav("/leads");
+              nav(backTo);
             }
           }}
         >

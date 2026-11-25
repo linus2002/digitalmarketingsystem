@@ -4,6 +4,7 @@ import { useAuth } from "./lib/auth";
 import { Layout } from "./components/Layout";
 import { Alert, Button, Empty, LinkButton, Modal, Skeleton, TextField, useDocTitle } from "./components/ui";
 import { LoginPage } from "./pages/Login";
+import { LandingPage } from "./pages/Landing";
 import { HomePage } from "./pages/Home";
 import { TrendsPage } from "./pages/Trends";
 import { StudioPage } from "./pages/Studio";
@@ -13,6 +14,7 @@ import { CalendarPage } from "./pages/Calendar";
 import { CampaignsPage, CampaignDetailPage } from "./pages/Campaigns";
 import { AnalyticsPage } from "./pages/Analytics";
 import { ReportsPage } from "./pages/Reports";
+import { DigestPage } from "./pages/Digest";
 import { PublishLogPage, AuditLogPage } from "./pages/Logs";
 import { LeadsPage } from "./pages/Leads";
 import { LeadDetailPage } from "./pages/LeadDetail";
@@ -125,7 +127,8 @@ export function App() {
         <Skeleton rows={2} />
       </div>
     );
-  if (!user) return <LoginPage />;
+  // Signed out: the home address shows the one-page overview, every other address asks to sign in.
+  if (!user) return loc.pathname === "/" ? <LandingPage /> : <LoginPage />;
 
   return (
     <>
@@ -143,6 +146,8 @@ export function App() {
         <Route path="campaigns/:id" element={<Guard perm="posts.view"><CampaignDetailPage /></Guard>} />
         <Route path="analytics" element={<Guard perm="analytics.view"><AnalyticsPage /></Guard>} />
         <Route path="reports" element={<Guard perm="reports.view"><ReportsPage /></Guard>} />
+        <Route path="reports/digest" element={<Guard perm="reports.view"><DigestPage /></Guard>} />
+        <Route path="reports/digest/:id" element={<Guard perm="reports.view"><DigestPage /></Guard>} />
         <Route path="logs/publishing" element={<Guard perm="logs.view"><PublishLogPage /></Guard>} />
         <Route path="logs/audit" element={<Guard perm="audit.view"><AuditLogPage /></Guard>} />
         <Route path="leads" element={<Guard perm="leads.view"><LeadsPage /></Guard>} />

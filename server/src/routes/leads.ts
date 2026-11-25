@@ -7,6 +7,7 @@ import { audit } from "../lib/audit.js";
 import { env } from "../config/env.js";
 import { fillTemplate, getConsent } from "../lib/settings.js";
 import { requirePerm, userCan } from "../middleware/auth.js";
+import { aiRateLimit, oneAtATime } from "../middleware/aiLimit.js";
 import { CATEGORY_LABELS, INQUIRY_CATEGORIES, redactContactData } from "../services/guardrails.js";
 import { addActivity, autoAssign, deliver, isOptedOut, leadRef, messengerWindow, reclassifyLead, stripContact, templateVars } from "../services/leads.js";
 import { anonymizeLead } from "../services/retention.js";
@@ -370,6 +371,7 @@ leadsRouter.post("/:id/messages/:mid/approve", requirePerm("leads.review"), asyn
   const id = intParam(req.params.id);
   const mid = intParam(req.params.mid, "message id");
   const lead = await loadLead(req, id);
+  if (lead.anonymized_at) throw conflict("This inquiry's personal data has been removed, so its replies can't be sent.");
   const b = parse(z.object({ body: z.string().trim().min(1).max(2000).optional() }), req.body ?? {});
   // Claim the draft first, so a double click or two reviewers can't send it twice.
   const msg = await one(
@@ -402,7 +404,9 @@ leadsRouter.post("/:id/messages/:mid/approve", requirePerm("leads.review"), asyn
 leadsRouter.post("/:id/messages/:mid/reject", requirePerm("leads.review"), async (req, res) => {
   const id = intParam(req.params.id);
   const mid = intParam(req.params.mid, "message id");
-  await loadLead(req, id);
+  const lead = await loadLead(req, id);
+  // The reason is free text that can hold personal details; an erased inquiry mustn't get new ones.
+  if (lead.anonymized_at) throw conflict("This inquiry's personal data has been removed.");
   const { reason } = parse(z.object({ reason: z.string().trim().min(2).max(500) }), req.body);
   const r = await q("UPDATE lead_messages SET status='rejected', error=$3, reviewed_by=$4, reviewed_at=now() WHERE id=$1 AND lead_id=$2 AND status='pending_review' RETURNING id", [
     mid,
@@ -416,7 +420,7 @@ leadsRouter.post("/:id/messages/:mid/reject", requirePerm("leads.review"), async
 });
 
 /** AI suggests a reply built from approved templates. It's only a draft: a person edits and sends it. */
-leadsRouter.post("/:id/suggest", requirePerm("leads.reply"), async (req, res) => {
+leadsRouter.post("/:id/suggest", requirePerm("leads.reply"), aiRateLimit(20, 15), oneAtATime("lead-suggest"), async (req, res) => {
   const id = intParam(req.params.id);
   const lead = await loadLead(req, id);
   assertOwner(req, lead);
@@ -447,7 +451,7 @@ leadsRouter.post("/:id/suggest", requirePerm("leads.reply"), async (req, res) =>
   res.json({ suggestion: { templateId: out.template_id ?? null, reply: String(out.reply ?? ""), needsPharmacist: !!out.needs_pharmacist || lead.needs_review, reason: out.reason ?? "" } });
 });
 
-leadsRouter.post("/:id/reclassify", requirePerm("leads.manage"), async (req, res) => {
+leadsRouter.post("/:id/reclassify", requirePerm("leads.manage"), aiRateLimit(20, 15), oneAtATime("lead-reclassify"), async (req, res) => {
   const id = intParam(req.params.id);
   assertOwner(req, await loadLead(req, id));
   res.json({ result: await reclassifyLead(id, true) });

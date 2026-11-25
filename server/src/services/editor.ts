@@ -101,7 +101,9 @@ export function evaluate(text: string, s: Standards, brand?: BrandSettings): Rul
     out.push({ key: `include:${w}`, label: `Includes "${w}"`, pass, detail: pass ? "Included." : "Missing." });
   }
   for (const w of s.mustAvoid.filter(Boolean)) {
-    const pass = !new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(body);
+    // Whole-word match that also works for terms starting or ending with a symbol ("100%", "#1"): \b would never
+    // match after "%", so the edges are "not a letter or digit" instead.
+    const pass = !new RegExp(`(?<![\\p{L}\\p{N}])${w.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "iu").test(body);
     out.push({ key: `avoid:${w}`, label: `Avoids "${w}"`, pass, detail: pass ? "Not used." : "Used: remove it." });
   }
   const lang = languageCheck(body, s.language);

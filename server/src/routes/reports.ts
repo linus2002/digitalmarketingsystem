@@ -1,11 +1,44 @@
 import { Router } from "express";
 import { z } from "zod";
-import { q } from "../lib/db.js";
-import { badRequest, parse } from "../lib/http.js";
+import { one, q } from "../lib/db.js";
+import { badRequest, intParam, notFound, parse } from "../lib/http.js";
 import { audit } from "../lib/audit.js";
+import { errMsg, log } from "../lib/logger.js";
 import { requirePerm } from "../middleware/auth.js";
+import { aiRateLimit } from "../middleware/aiLimit.js";
+import { createDigest, lastWeekStart, mondayOf, writingWeeks } from "../services/digest.js";
 
 export const reportsRouter = Router();
+
+// ---------------------------------------------------------------- weekly digest
+
+reportsRouter.get("/digests", requirePerm("reports.view"), async (_req, res) => {
+  const rows = await q(
+    "SELECT id, week_start, week_end, summary->>'headline' AS headline, written_by, created_at, updated_at FROM digests ORDER BY week_start DESC LIMIT 52",
+  );
+  res.json({ digests: rows, writing: writingWeeks(), lastWeek: lastWeekStart() });
+});
+
+reportsRouter.get("/digests/:id", requirePerm("reports.view"), async (req, res) => {
+  const row = await one("SELECT * FROM digests WHERE id=$1", [intParam(req.params.id)]);
+  if (!row) throw notFound("Digest");
+  res.json({ digest: row, writing: writingWeeks() });
+});
+
+/** Writes (or rewrites) a week's digest in the background: a local AI model can take a few minutes. */
+// Writing replaces what the team was notified about and uses the AI: managers only (the same people who can
+// refresh analytics), a few times an hour, and only for the last year.
+reportsRouter.post("/digests", requirePerm("analytics.sync"), aiRateLimit(6, 60), async (req, res) => {
+  const { week } = parse(z.object({ week: z.string().date().optional() }), req.body ?? {});
+  const start = mondayOf(week ?? lastWeekStart());
+  if (start > lastWeekStart()) throw badRequest("That week isn't over yet. Digests cover full weeks, Monday to Sunday.");
+  const yearAgo = new Date(Date.now() - 366 * 86_400_000).toISOString().slice(0, 10);
+  if (start < yearAgo) throw badRequest("Digests can be written for the last 12 months.");
+  if (writingWeeks().includes(start)) return void res.status(202).json({ week: start, started: false });
+  void createDigest(start, req.user!.id, { notifyTeam: false }).catch((err) => log.error("Weekly digest failed", { week: start, error: errMsg(err) }));
+  await audit(req, "report.digest_written", "digest", start);
+  res.status(202).json({ week: start, started: true });
+});
 
 // Dates are Philippine calendar days; "to" is inclusive (the whole day).
 const PH_MS = 8 * 3_600_000;

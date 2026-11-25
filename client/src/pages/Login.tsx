@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { Alert, Button, TextField, useDocTitle } from "../components/ui";
 import { BRAND } from "../components/Layout";
@@ -46,7 +47,7 @@ export function LoginPage() {
             <h1>
               <span>Plan, approve and publish,</span> <span>then answer every inquiry properly.</span>
             </h1>
-            <p>Trends, content, the calendar and your Facebook Page in one place, with the pharmaceutical team in the loop.</p>
+            <p>Trends, content, the calendar and your social accounts in one place, with the pharmaceutical team in the loop.</p>
           </div>
           <div className="brand" style={{ border: 0, padding: 0, marginBottom: 8 }}>
             <span className="mark">{BRAND.short}</span>
@@ -88,6 +89,9 @@ export function LoginPage() {
           </Button>
           <p className="note" style={{ textAlign: "center" }}>
             Forgot your password? Ask an administrator to reset it.
+          </p>
+          <p className="note" style={{ textAlign: "center", marginTop: -4 }}>
+            <Link to="/">About the system</Link>
           </p>
         </form>
       </div>

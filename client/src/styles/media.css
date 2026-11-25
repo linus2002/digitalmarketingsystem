@@ -11,12 +11,12 @@
 .media-hint { display: block; font-size: 12.5px; color: var(--ink-3); margin-top: 2px; }
 .media-err { font-size: 12.5px; color: var(--bad); margin-left: 4px; }
 .media-card { border: 1px solid var(--rule); border-radius: 16px; overflow: hidden; background: var(--canvas); }
-.media-card .media-prev { display: block; width: 100%; max-height: 320px; object-fit: contain; background: #f1f2f6; border: 0; border-radius: 0; }
+.media-card .media-prev { display: block; width: 100%; max-height: 320px; object-fit: contain; background: var(--soft); border: 0; border-radius: 0; }
 .media-card .bar { margin: 0; border-radius: 0; }
 .media-meta { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 14px; font-size: 13px; }
 .media-meta > svg { width: 16px; height: 16px; color: var(--ink-3); flex: none; }
 .media-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .media-meta em { font-style: normal; color: var(--ink-3); }
-.media-prev { display: block; width: 100%; border-radius: 12px; border: 1px solid var(--rule); background: #f1f2f6; }
-.media-thumb { width: 64px; height: 64px; flex: none; object-fit: cover; border-radius: 10px; border: 1px solid var(--rule); background: #f1f2f6; }
+.media-prev { display: block; width: 100%; border-radius: 12px; border: 1px solid var(--rule); background: var(--soft); }
+.media-thumb { width: 64px; height: 64px; flex: none; object-fit: cover; border-radius: 10px; border: 1px solid var(--rule); background: var(--soft); }
 .link-toggle { justify-self: start; font-size: 13px; }

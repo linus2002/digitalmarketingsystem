@@ -2,7 +2,9 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import "./styles/app.css";
+import "./styles/theme.css";
 import { App } from "./App";
+import { initTheme } from "./lib/theme";
 import { AuthProvider } from "./lib/auth";
 import { ToastProvider } from "./components/Toast";
 import { IconSprite } from "./components/Icons";
@@ -21,6 +23,8 @@ const router = createBrowserRouter([
     ),
   },
 ]);
+
+initTheme();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
