@@ -87,22 +87,50 @@ function Eyes({ mood }: { mood: Mood }) {
   }
 }
 
-/** The robot head, drawn in a 120 x 100 box. */
-function HeadShapes({ mood, color }: { mood: Mood; color: string }) {
+/**
+ * The robot head, drawn in a 120 x 100 box.
+ * turn: -1 looking to the viewer's left, 1 to the right (three-quarter view), 0 straight on.
+ * back: seen from behind (no visor; a vent panel in the bot's colour instead).
+ */
+function HeadShapes({ mood, color, turn = 0, back = false }: { mood: Mood; color: string; turn?: number; back?: boolean }) {
+  // In a three-quarter view the far ear tucks behind the helmet and the visor slides toward the turn.
+  const shift = back ? -turn * 6 : turn * 9;
+  const hideLeftEar = !back && turn > 0;
+  const hideRightEar = !back && turn < 0;
   return (
     <>
       {/* ear pieces */}
-      <rect x="5" y="38" width="16" height="26" rx="8" fill="#dfe4ec" stroke={INK} strokeWidth="3.5" />
-      <rect x="99" y="38" width="16" height="26" rx="8" fill="#dfe4ec" stroke={INK} strokeWidth="3.5" />
-      <circle cx="13" cy="51" r="3" fill={color} />
-      <circle cx="107" cy="51" r="3" fill={color} />
+      {!hideLeftEar && (
+        <>
+          <rect x={5 + Math.max(0, shift)} y="38" width="16" height="26" rx="8" fill="#dfe4ec" stroke={INK} strokeWidth="3.5" />
+          <circle cx={13 + Math.max(0, shift)} cy="51" r="3" fill={color} />
+        </>
+      )}
+      {!hideRightEar && (
+        <>
+          <rect x={99 + Math.min(0, shift)} y="38" width="16" height="26" rx="8" fill="#dfe4ec" stroke={INK} strokeWidth="3.5" />
+          <circle cx={107 + Math.min(0, shift)} cy="51" r="3" fill={color} />
+        </>
+      )}
       {/* helmet */}
       <rect x="15" y="9" width="90" height="82" rx="41" fill="#fff" stroke={INK} strokeWidth="4" />
       <path d="M30 22 Q60 6 90 22" fill="none" stroke="#eef1f6" strokeWidth="5" strokeLinecap="round" />
-      {/* visor */}
-      <rect x="25" y="25" width="70" height="50" rx="24" fill={VISOR} />
-      <path d="M33 33 Q40 28 50 28" fill="none" stroke="#ffffff" strokeOpacity=".18" strokeWidth="3" strokeLinecap="round" />
-      <Eyes mood={mood} />
+      {back ? (
+        // the back of the head: a strap in the bot's colour over the top, small vents low down, no visor
+        <g transform={`translate(${shift} 0)`}>
+          <path d="M22 50 Q60 30 98 50" fill="none" stroke={color} strokeWidth="9" strokeLinecap="round" />
+          {[50, 60, 70].map((x) => (
+            <rect key={x} x={x - 2.5} y="66" width="5" height="12" rx="2.5" fill="#c9cddd" />
+          ))}
+        </g>
+      ) : (
+        <g transform={`translate(${shift} 0)`}>
+          {/* visor */}
+          <rect x="25" y="25" width="70" height="50" rx="24" fill={VISOR} />
+          <path d="M33 33 Q40 28 50 28" fill="none" stroke="#ffffff" strokeOpacity=".18" strokeWidth="3" strokeLinecap="round" />
+          <Eyes mood={mood} />
+        </g>
+      )}
       {mood === "sleep" && (
         <g fill={EYE} fontFamily="Poppins, sans-serif" fontWeight="700">
           <text x="96" y="20" fontSize="13">z</text>
@@ -136,6 +164,10 @@ export function BotFigure({
   walk,
   bob = 0,
   prop,
+  facing = "front",
+  turn = 0,
+  typing,
+  swing = 0,
 }: {
   bot: BotName;
   mood: Mood;
@@ -143,38 +175,111 @@ export function BotFigure({
   y: number;
   scale: number;
   pose?: "stand" | "sit";
-  /** Walking cycle in radians; feet step and the body bounces. */
+  /** Walking cycle in radians; feet step, arms swing and the body bounces. */
   walk?: number;
   /** Extra vertical offset in pixels (typing, breathing). */
   bob?: number;
-  prop?: "mug" | "book" | null;
+  prop?: "mug" | "book" | "pad" | "racket" | null;
+  /** "back": seen from behind (at a desk, walking away). */
+  facing?: "front" | "back";
+  /** Which way it's turned on screen: -1 left, 1 right, 0 straight on. */
+  turn?: number;
+  /** Typing cycle in radians: both hands reach forward and tap in turn (at a keyboard or a game pad). */
+  typing?: number;
+  /** Racket swing, 0 (ready) to 1 (hit). */
+  swing?: number;
 }) {
   const color = BOTS[bot].color;
+  const back = facing === "back";
   const bottom = pose === "sit" ? 128 : 140;
   const bounce = walk !== undefined ? -Math.abs(Math.sin(walk)) * 5 : 0;
   const step = walk !== undefined ? Math.sin(walk) * 4 : 0;
+  const arm = walk !== undefined ? Math.sin(walk) * 7 : 0;
+  // Feet: walking side-on, the near foot leads; seen from behind, the feet are mostly hidden by the body.
+  const footShift = turn * 5;
+  const reach = typing !== undefined;
+  const tapL = reach ? Math.max(0, Math.sin(typing!)) * 5 : 0;
+  const tapR = reach ? Math.max(0, Math.sin(typing! + Math.PI)) * 5 : 0;
+
+  const armsBehind = false;
+  // Reaching forward: seen from behind the hands go out past the shoulders and up towards the desk;
+  // from the front they come down in front of the body.
+  const hand = (side: -1 | 1, tap: number): [number, number] => (back ? [60 + side * 50, 90 - tap] : [60 + side * 24, 114 - tap]);
+  const armPath = (side: -1 | 1, tap: number) => {
+    const [hx, hy] = hand(side, tap);
+    const sx = 60 + side * 22;
+    return `M${sx} 98 Q${60 + side * (back ? 46 : 36)} ${back ? 104 : 108} ${hx} ${hy}`;
+  };
+  const arms = reach ? (
+    // reaching forward to a keyboard or game pad, hands tapping in turn
+    <g strokeLinecap="round">
+      {([-1, 1] as const).map((side) => {
+        const tap = side < 0 ? tapL : tapR;
+        const [hx, hy] = hand(side, tap);
+        return (
+          <g key={side}>
+            <path d={armPath(side, tap)} fill="none" strokeWidth="12" stroke={INK} />
+            <path d={armPath(side, tap)} fill="none" strokeWidth="5.5" stroke="#fff" />
+            <circle cx={hx} cy={hy} r="6.5" fill="#fff" stroke={INK} strokeWidth="4" />
+          </g>
+        );
+      })}
+    </g>
+  ) : (
+    // hanging at the sides, swinging while walking
+    <g fill="#fff" stroke={INK} strokeWidth="4">
+      {!(turn > 0 && !back) && <rect x={24 + Math.max(0, turn) * 4} y={92 + arm} width="12" height="26" rx="6" />}
+      {!(turn < 0 && !back) && <rect x={84 + Math.min(0, turn) * 4} y={92 - arm} width="12" height="26" rx="6" />}
+    </g>
+  );
+
+  // The racket is held out to the side, tilted away from the head, and swings across on a hit.
+  const racketAngle = turn >= 0 ? 35 - swing * 100 : -35 + swing * 100;
+  const racketHand = turn >= 0 ? [104, 112] : [16, 112];
+
   return (
     <g transform={`translate(${(x - 60 * scale).toFixed(1)} ${(y - bottom * scale + bob + bounce * scale).toFixed(1)}) scale(${scale})`}>
       {pose === "stand" && (
         <g fill="#fff" stroke={INK} strokeWidth="4">
-          <rect x="40" y={124 - step} width="16" height="16" rx="7" />
-          <rect x="64" y={124 + step} width="16" height="16" rx="7" />
+          <rect x={40 + footShift} y={124 - step} width="16" height="16" rx="7" />
+          <rect x={64 + footShift} y={124 + step} width="16" height="16" rx="7" />
         </g>
       )}
+      {armsBehind && arms}
       <rect x="34" y="84" width="52" height="44" rx="20" fill="#fff" stroke={INK} strokeWidth="4" />
-      <circle cx="60" cy="104" r="6" fill={color} />
-      <HeadShapes mood={mood} color={color} />
-      {prop === "mug" && (
+      {back ? (
+        <rect x="52" y="90" width="16" height="30" rx="6" fill={color} opacity=".85" />
+      ) : (
+        <circle cx={60 + turn * 8} cy="104" r="6" fill={color} />
+      )}
+      {!armsBehind && arms}
+      <HeadShapes mood={mood} color={color} turn={turn} back={back} />
+      {prop === "mug" && !back && (
         <g>
           <rect x="84" y="96" width="18" height="20" rx="4" fill="#fff" stroke={INK} strokeWidth="3.5" />
           <rect x="84" y="102" width="18" height="6" fill={color} />
           <path d="M102 101 q8 0 8 6 q0 6 -8 6" fill="none" stroke={INK} strokeWidth="3" />
         </g>
       )}
-      {prop === "book" && (
+      {prop === "book" && !back && (
         <g>
           <rect x="30" y="92" width="60" height="30" rx="3" fill={color} stroke={INK} strokeWidth="3.5" />
           <path d="M60 92 v30" stroke="#fff" strokeWidth="3" />
+        </g>
+      )}
+      {prop === "pad" && !back && (
+        // a game pad held in both hands (seen from behind it's hidden in front of the bot)
+        <g>
+          <rect x="38" y="104" width="44" height="16" rx="8" fill="#2c2843" stroke={INK} strokeWidth="3" />
+          <circle cx="48" cy="112" r="2.5" fill="#45b8f5" />
+          <circle cx="72" cy="112" r="2.5" fill="#f2b01e" />
+        </g>
+      )}
+      {prop === "racket" && (
+        <g transform={`rotate(${racketAngle} ${racketHand[0]} ${racketHand[1]})`}>
+          <line x1={racketHand[0]} y1={racketHand[1]} x2={racketHand[0]} y2={racketHand[1] - 26} stroke="#2c2843" strokeWidth="5" strokeLinecap="round" />
+          <ellipse cx={racketHand[0]} cy={racketHand[1] - 42} rx="13" ry="17" fill="rgba(255,255,255,.55)" stroke={color} strokeWidth="4" />
+          <path d={`M${racketHand[0] - 10} ${racketHand[1] - 42}h20M${racketHand[0]} ${racketHand[1] - 56}v28`} stroke="#c9cddd" strokeWidth="1.5" />
         </g>
       )}
     </g>
@@ -227,83 +332,3 @@ export const FLOW: FlowStage[] = [
   { key: "handoff", title: "Hand off", lane: "Check", bot: "posting" },
   { key: "publish", title: "Approve and publish", lane: "Publish", bot: "team" },
 ];
-
-function Person({ x, y, color }: { x: number; y: number; color: string }) {
-  return (
-    <g>
-      <ellipse cx={x} cy={y} rx="16" ry="6" fill="rgba(20,30,60,.15)" />
-      <rect x={x - 9} y={y - 40} width="18" height="38" rx="9" fill={color} />
-      <circle cx={x} cy={y - 50} r="10" fill="#f2c9a5" />
-      <path d={`M${x - 11} ${y - 52} q11 -16 22 0`} fill={color} />
-    </g>
-  );
-}
-
-/** Stations along a zig-zag path, in the style of a customer journey map. `current` highlights the stage the batch is at. */
-export function BotFlow({ current, done }: { current: number; done: number }) {
-  const iso = isoFn(250, 40, 30);
-  // Path: along x (stations 0-2), down a connector along y (3), then back along -x (4-6).
-  const stations: [number, number][] = [
-    [0.9, 1], [3.1, 1], [5.3, 1], [7.6, 1], [8.0, 4.0], [7.0, 7], [4.2, 7], [1.4, 7],
-  ];
-  const lanes: { x0: number; y0: number; x1: number; y1: number; top: string; left: string; right: string; label: string; lx: number; ly: number }[] = [
-    { x0: 0, y0: 0, x1: 9, y1: 2, top: "#dbe6fd", left: "#b9cdf8", right: "#a9c1f6", label: "Prepare", lx: 4.5, ly: 2.15 },
-    { x0: 7, y0: 2, x1: 9, y1: 6, top: "#b9cdf8", left: "#94b2f2", right: "#83a5ef", label: "Plan", lx: 9.15, ly: 4 },
-    { x0: 0, y0: 6, x1: 9, y1: 8, top: "#6c9cf0", left: "#3f73d9", right: "#3567cc", label: "Check", lx: 6.2, ly: 8.15 },
-  ];
-  const path = stations.map((s) => iso(s[0], s[1], 0));
-  return (
-    <svg viewBox="0 0 520 350" className="flow-svg" role="img" aria-label={`How a batch moves through the bots. Current step: ${FLOW[current]?.title ?? "finished"}.`}>
-      {lanes.map((l, i) => (
-        <Slab key={i} iso={iso} x0={l.x0} y0={l.y0} x1={l.x1} y1={l.y1} z={0} h={0.7} top={l.top} left={l.left} right={l.right} />
-      ))}
-      {/* the final "publish" step is a darker landing */}
-      <Slab iso={iso} x0={0} y0={6} x1={2.6} y1={8} z={0.001} h={0.7} top="#1f5fd6" left="#153f91" right="#174bad" />
-      {lanes.map((l, i) => {
-        const [x, y] = iso(l.lx, l.ly, -0.38);
-        const angle = i === 1 ? -30 : 30;
-        return (
-          <text key={`t${i}`} x={x} y={y} textAnchor="middle" className="flow-lane" transform={`rotate(${angle} ${x} ${y})`}>
-            {l.label}
-          </text>
-        );
-      })}
-      {(() => {
-        const [x, y] = iso(1.3, 8.15, -0.38);
-        return (
-          <text x={x} y={y} textAnchor="middle" className="flow-lane" transform={`rotate(30 ${x} ${y})`}>
-            Publish
-          </text>
-        );
-      })()}
-      <polyline points={pts(...path)} fill="none" stroke="#ffffff" strokeWidth="2.5" strokeDasharray="7 6" strokeLinecap="round" />
-      {stations.map((s, i) => {
-        const [x, y] = iso(s[0], s[1], 0);
-        const st = FLOW[i];
-        const isNow = i === current;
-        const isDone = i < done;
-        return (
-          <g key={st.key}>
-            <ellipse cx={x} cy={y} rx="22" ry="11" fill={isNow ? "rgba(124,92,255,.35)" : "rgba(255,255,255,.55)"} stroke={isNow ? "#7c5cff" : "none"} strokeWidth="2" className={isNow ? "flow-now" : undefined} />
-            {st.bot === "you" ? (
-              <Person x={x} y={y - 2} color="#1f5fd6" />
-            ) : st.bot === "team" ? (
-              <>
-                <Person x={x - 12} y={y - 2} color="#1e9e57" />
-                <Person x={x + 12} y={y + 2} color="#153f91" />
-              </>
-            ) : (
-              <BotFigure bot={st.bot} mood={isNow ? "focus" : isDone ? "happy" : BOTS[st.bot].mood} x={x} y={y + 2} scale={0.36} />
-            )}
-            <g transform={`translate(${x + 22} ${st.bot === "you" || st.bot === "team" ? y - 64 : y - 52})`}>
-              <circle r="11" fill={isDone ? "#1e9e57" : isNow ? "#7c5cff" : "#ffffff"} stroke={isDone || isNow ? "none" : "#8a8a8a"} strokeWidth="1.5" />
-              <text y="4" textAnchor="middle" className="flow-num" fill={isDone || isNow ? "#fff" : "#3b3b3b"}>
-                {isDone ? "✓" : i + 1}
-              </text>
-            </g>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}

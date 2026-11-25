@@ -6,14 +6,16 @@ import { ago } from "../lib/format";
 import { useToast } from "../components/Toast";
 import { Alert, Button, ConfirmModal, Empty, IconButton, LoadError, PageHead, SelectField, Skeleton, Switch, Tabs, Tag, TextArea, TextField } from "../components/ui";
 import { LeaveGuard } from "../components/LeaveGuard";
+import { SocialAccountsTab } from "../components/SocialAccounts";
 import "../styles/content.css";
 
-type Tab = "brand" | "facebook" | "sources" | "privacy" | "system";
+type Tab = "brand" | "facebook" | "social" | "sources" | "privacy" | "system";
 
 // settings.brand (marketing managers) covers the brand guidelines and trend sources; settings.manage (administrators) covers everything.
 const TABS: { value: Tab; label: string; perm: "settings.brand" | "settings.manage" }[] = [
   { value: "brand", label: "Brand guidelines", perm: "settings.brand" },
   { value: "facebook", label: "Facebook connection", perm: "settings.manage" },
+  { value: "social", label: "Social accounts", perm: "settings.manage" },
   { value: "sources", label: "Trend sources", perm: "settings.brand" },
   { value: "privacy", label: "Privacy and retention", perm: "settings.manage" },
   { value: "system", label: "System", perm: "settings.manage" },
@@ -47,7 +49,7 @@ export function SettingsPage() {
       </>
     );
 
-  const sub = isAdmin ? "Brand rules for the AI, the Facebook connection, trend sources and privacy." : "Brand rules for the AI and the sources the trend scanner reads.";
+  const sub = isAdmin ? "Brand rules for the AI, Facebook and the other social accounts, trend sources and privacy." : "Brand rules for the AI and the sources the trend scanner reads.";
   return (
     <>
       <LeaveGuard when={dirty} message="Your changes in Settings haven't been saved. Leave without saving?" />
@@ -56,6 +58,7 @@ export function SettingsPage() {
       <div className="mt24">
         {tab === "brand" && <BrandTab onDirty={setDirty} />}
         {tab === "facebook" && <FacebookTab onDirty={setDirty} />}
+        {tab === "social" && <SocialAccountsTab />}
         {tab === "sources" && <SourcesTab />}
         {tab === "privacy" && <PrivacyTab onDirty={setDirty} />}
         {tab === "system" && <SystemTab />}

@@ -62,6 +62,10 @@ const schema = z.object({
   META_PAGE_METRICS: csv("page_impressions_unique,page_post_engagements,page_follows,page_media_view,page_total_media_view_unique,page_views_total"),
   // Test mode: log instead of calling Facebook. On unless explicitly turned off, so live sending is always a deliberate choice.
   PUBLISH_DRY_RUN: bool(true),
+  // Web address the platforms can reach this server at (e.g. https://marketing.example.com). Instagram and TikTok
+  // download uploaded images/videos from it, and it's where Google, TikTok and LinkedIn send people back after
+  // "Connect". Defaults to CLIENT_ORIGIN (the dev server forwards /api to this server).
+  PUBLIC_BASE_URL: z.string().default(""),
   MESSENGER_DRY_RUN: bool(true),
 
   SCHEDULER_ENABLED: bool(true),
@@ -69,6 +73,9 @@ const schema = z.object({
   ANALYTICS_SYNC_HOURS: z.coerce.number().min(0).default(6),
   // How often trends (including live Google trends) are rescanned automatically. 0 = only when someone presses "Scan now".
   TRENDS_AUTO_REFRESH_MINUTES: z.coerce.number().min(0).default(30),
+
+  // Weekly performance digest: written every Monday from 8:00 AM Philippine time for last week.
+  WEEKLY_DIGEST: bool(true),
 
   NEWSAPI_KEY: z.string().default(""),
   NCBI_API_KEY: z.string().default(""),

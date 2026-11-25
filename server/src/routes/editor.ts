@@ -5,6 +5,7 @@ import { badRequest, conflict, HttpError, intParam, notFound, parse } from "../l
 import { audit } from "../lib/audit.js";
 import { getBrand } from "../lib/settings.js";
 import { requirePerm } from "../middleware/auth.js";
+import { abortOnDisconnect, aiRateLimit, oneAtATime } from "../middleware/aiLimit.js";
 import { aiStatus } from "../services/ai.js";
 import { activity, assertNotRunning } from "../services/bots.js";
 import { DEFAULT_STANDARDS, evaluate, getStandards, revise, saveStandards } from "../services/editor.js";
@@ -55,7 +56,7 @@ editorRouter.post("/check", view, async (req, res) => {
 });
 
 /** Revises a caption and saves the suggestion (pending) for a person to accept or reject. */
-editorRouter.post("/revise", view, async (req, res) => {
+editorRouter.post("/revise", view, aiRateLimit(20, 15), oneAtATime("editor"), async (req, res) => {
   const b = parse(
     z.object({
       text: z.string().trim().min(1, "There's no text to revise yet.").max(10_000),
@@ -73,10 +74,10 @@ editorRouter.post("/revise", view, async (req, res) => {
     if (!item) throw notFound("Post in this batch");
     if (item.post_id || item.handed_off_at) throw conflict("This post was already handed off. Revise it in Post approvals.");
   }
-  const abort = new AbortController();
-  req.on("close", () => !res.writableEnded && abort.abort());
+  // Stops the AI when the person presses Cancel or leaves (the request's own "close" has already fired by now).
+  const signal = abortOnDisconnect(res);
   // A second pass only happens if the first one still misses a rule.
-  const r = await revise(b.text, { feedback: b.feedback, signal: abort.signal, tries: 2 });
+  const r = await revise(b.text, { feedback: b.feedback, signal, tries: 2 });
   const rev = await one(
     `INSERT INTO content_revisions (post_id, bot_item_id, before_text, after_text, feedback, results_before, results_after, created_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, before_text, after_text, results_before, results_after, status, created_at`,
@@ -100,11 +101,25 @@ editorRouter.post("/revisions/:id/decide", view, async (req, res) => {
     if (!item) throw notFound("Post in this batch");
     if (item.post_id || item.handed_off_at) throw conflict("This post was already handed off.");
     await assertNotRunning(item.batch_id);
-    if ((item.caption ?? "").trim() !== String(rev.before_text).trim()) throw conflict("The caption changed since this revision was made. Ask the Editor Bot to revise it again.");
-    await tx(async (c) => {
-      await q("UPDATE bot_items SET caption=$2, issues='[]'::jsonb, updated_at=now() WHERE id=$1", [rev.bot_item_id, rev.after_text], c);
+    // Claim the revision first and apply it in the same transaction, only if the caption is still the one it was
+    // made from: a reject (or another accept) at the same moment can't leave its text in the caption.
+    const row = await tx(async (c) => {
+      const claimed = await one(
+        "UPDATE content_revisions SET status='accepted', decided_by=$2, decided_at=now() WHERE id=$1 AND status='pending' RETURNING id, status, after_text",
+        [id, req.user!.id],
+        c,
+      );
+      if (!claimed) throw conflict("This revision was already decided.");
+      const changed = await q(
+        "UPDATE bot_items SET caption=$2, issues='[]'::jsonb, updated_at=now() WHERE id=$1 AND btrim(COALESCE(caption, '')) = btrim($3) AND post_id IS NULL AND handed_off_at IS NULL RETURNING id",
+        [rev.bot_item_id, rev.after_text, rev.before_text],
+        c,
+      );
+      if (!changed.length) throw conflict("The caption changed since this revision was made. Ask the Editor Bot to revise it again.");
       await q("UPDATE bot_batches SET checked_at=NULL, updated_at=now() WHERE id=$1", [item.batch_id], c);
+      return claimed;
     });
+    return void res.json({ revision: row });
   }
   const row = await one(
     "UPDATE content_revisions SET status=$2, decided_by=$3, decided_at=now() WHERE id=$1 AND status='pending' RETURNING id, status, after_text",

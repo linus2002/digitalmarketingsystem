@@ -11,6 +11,6 @@
 .imp-bad { color: var(--bad); font-size: 12.5px; display: inline-flex; gap: 4px; align-items: flex-start; }
 .imp-ok { color: var(--good); }
 .imp-line { margin: 0; font-size: 13px; padding: 6px 12px; border-radius: 10px; }
-.imp-line.bad { background: var(--bad-bg); color: #7a1810; }
-.imp-line.warn { background: var(--warn-bg); color: #5c3c00; }
+.imp-line.bad { background: var(--bad-bg); color: var(--bad-ink); }
+.imp-line.warn { background: var(--warn-bg); color: var(--warn-ink); }
 .imp-empty { text-align: center; padding: 20px; border: 1.5px dashed var(--rule); border-radius: 16px; display: grid; justify-items: center; gap: 6px; color: var(--ink-2); }

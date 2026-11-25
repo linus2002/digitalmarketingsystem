@@ -47,7 +47,9 @@ dashboardRouter.get("/", async (req, res) => {
     const scope = `($1 OR assigned_to=$2 OR (assigned_to IS NULL AND consent_given AND NOT needs_review))`;
     out.leads = await one(
       `SELECT count(*) FILTER (WHERE status IN ('new','in_progress','waiting_customer'))::int AS open,
-              count(*) FILTER (WHERE needs_review AND status NOT IN ('closed','opted_out'))::int AS needs_review,
+              count(*) FILTER (WHERE needs_review AND status NOT IN ('closed','opted_out') AND anonymized_at IS NULL
+                                 -- same rule as the Inquiries list: not before consent, except deletion requests
+                                 AND (status NOT IN ('awaiting_consent','collecting') OR ($1 AND category='privacy_request')))::int AS needs_review,
               count(*) FILTER (WHERE follow_up_at < now() AND status IN ('new','in_progress','waiting_customer'))::int AS overdue,
               count(*) FILTER (WHERE status='new')::int AS new
        FROM leads WHERE ${scope}`,

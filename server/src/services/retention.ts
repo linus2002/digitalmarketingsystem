@@ -17,6 +17,9 @@ export async function anonymizeLead(leadId: number, reason: string, userId: numb
     );
     // Message bodies, and error text (which holds the reviewer's reason when a reply wasn't approved)
     await q("UPDATE lead_messages SET body_enc=NULL, error=NULL WHERE lead_id=$1", [leadId], c);
+    // Replies still waiting for review (or mid-send) are stopped: there is nobody to answer any more,
+    // and approving one would store personal text again after it was erased.
+    await q("UPDATE lead_messages SET status='blocked' WHERE lead_id=$1 AND status IN ('pending_review','sending')", [leadId], c);
     // Every activity note is free text that can hold personal details (notes, "medicine name → …" updates, review reasons)
     await q("UPDATE lead_activities SET note=NULL WHERE lead_id=$1", [leadId], c);
     await q("INSERT INTO lead_activities (lead_id, user_id, type, note) VALUES ($1,$2,'retention',$3)", [leadId, userId, reason], c);

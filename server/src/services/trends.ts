@@ -603,7 +603,23 @@ let summarising = false;
 /** True while the AI is writing summaries in the background (the auto-refresh waits for it). */
 export const isSummarising = () => summarising;
 
-export async function refreshTrends(userId: number | null, opts: { days?: number; useAi?: boolean } = {}) {
+/**
+ * One scan at a time: fetching the feeds can take minutes, and the automatic job (every minute) or a person pressing
+ * "Scan now" meanwhile would start a second scan and save duplicate snapshots. A second call shares the running one.
+ */
+let inflight: ReturnType<typeof runRefresh> | null = null;
+export const isRefreshing = () => !!inflight;
+export function refreshTrends(userId: number | null, opts: { days?: number; useAi?: boolean } = {}) {
+  if (inflight) return inflight;
+  const run = runRefresh(userId, opts);
+  inflight = run;
+  void run.catch(() => undefined).finally(() => {
+    if (inflight === run) inflight = null;
+  });
+  return run;
+}
+
+async function runRefresh(userId: number | null, opts: { days?: number; useAi?: boolean } = {}) {
   const days = opts.days ?? 7;
   const sources = await q<{ id: number; name: string; kind: string; url: string | null; query: string | null }>(
     "SELECT id, name, kind, url, query FROM trend_sources WHERE enabled ORDER BY id",

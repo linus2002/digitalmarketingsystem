@@ -27,19 +27,19 @@ function SetupCard() {
       ok: st.ai.ready,
       title: st.ai.ready ? `AI is ready (${st.ai.label})` : `AI isn't ready (${st.ai.label})`,
       detail: st.ai.ready ? st.ai.model : [st.ai.problem, st.ai.fix].filter(Boolean).join(" "),
-      to: "/settings",
+      to: "/settings?tab=system",
       link: st.ai.ready ? undefined : "Settings",
     },
     {
       ok: st.facebook.connected,
       title: st.facebook.connected ? `Facebook Page connected${st.facebook.pageName ? `: ${st.facebook.pageName}` : ""}` : "Facebook Page not connected",
       detail: st.facebook.connected ? "Posts and Messenger use this Page." : "Connect the Page so posts can be published and inquiries arrive.",
-      to: "/settings",
+      to: "/settings?tab=facebook",
       link: st.facebook.connected ? undefined : "Connect the Page",
     },
     {
       ok: "info",
-      title: test ? "Test mode is on" : "Live: posts and replies go to Facebook",
+      title: test ? "Test mode is on" : "Live: posts go to your social accounts and replies to Messenger",
       detail: test
         ? `${st.publishTestMode ? "Posts" : ""}${st.publishTestMode && st.messengerTestMode ? " and " : ""}${st.messengerTestMode ? "Messenger replies" : ""} are logged, not sent. Set PUBLISH_DRY_RUN / MESSENGER_DRY_RUN to false in .env and restart to go live.`
         : "Set PUBLISH_DRY_RUN=true in .env to test safely.",
@@ -244,7 +244,7 @@ export function HomePage() {
                             <Icon name="cal" />
                           </span>
                           <div className="tl-body">
-                            <Link to={`/posts/${p.id}`} className="tl-title" title={p.title}>
+                            <Link to={`/posts/${p.id}`} className="tl-title" title={p.title} state={{ from: { to: "/", label: "Home" } }}>
                               {p.title}
                             </Link>
                             <div className="tl-meta">

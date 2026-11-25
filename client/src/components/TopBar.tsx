@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObjec
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { THEMES, useTheme } from "../lib/theme";
 import { ago, BUSINESS_TZ_LABEL, fmtBiz, fromBizInput, initials } from "../lib/format";
 import { useToast } from "./Toast";
 import { Icon, type IconName } from "./Icons";
@@ -204,7 +205,11 @@ function NotificationsMenu() {
                       {item.body && <span className="tb-body">{item.body}</span>}
                       <span className="tb-time">{ago(item.created_at)}</span>
                     </span>
-                    {!item.read_at && <span className="tb-dot" aria-label="Unread" />}
+                    {!item.read_at && (
+                      <span className="tb-dot">
+                        <span className="sr-only">Unread</span>
+                      </span>
+                    )}
                   </button>
                 </li>
               ))}
@@ -287,15 +292,26 @@ function NotesModal({ store, onClose }: { store: ReturnType<typeof useNotes>; on
       toast.err("Couldn't update the note", (e as Error).message);
     }
   }
-  async function remove(id: number) {
-    const before = store.notes;
+  /** Hides the note at once; it's only deleted after a few seconds, so Undo can bring it back. */
+  function remove(id: number) {
+    const gone = store.notes.find((n) => n.id === id);
+    if (!gone) return;
+    const putBack = () => store.setNotes((xs) => (xs.some((n) => n.id === id) ? xs : [...xs, gone].sort((p, q) => p.id - q.id)));
     store.setNotes((xs) => xs.filter((n) => n.id !== id));
-    try {
-      await api(`/notes/${id}`, { method: "DELETE" });
-    } catch (e) {
-      store.setNotes(before);
-      toast.err("Couldn't delete the note", (e as Error).message);
-    }
+    let undone = false;
+    toast.undo("Note deleted", () => {
+      undone = true;
+      putBack();
+    });
+    window.setTimeout(async () => {
+      if (undone) return;
+      try {
+        await api(`/notes/${id}`, { method: "DELETE" });
+      } catch (e) {
+        putBack();
+        toast.err("Couldn't delete the note", (e as Error).message);
+      }
+    }, 6000);
   }
   async function clearDone() {
     const before = store.notes;
@@ -384,7 +400,7 @@ function NotesModal({ store, onClose }: { store: ReturnType<typeof useNotes>; on
                     }}
                   />
                 )}
-                <IconButton icon="trash" label="Delete" danger onClick={() => void remove(n.id)} />
+                <IconButton icon="trash" label="Delete" danger onClick={() => remove(n.id)} />
               </li>
             );
           })}
@@ -423,6 +439,7 @@ function NotesButton() {
 
 function UserMenu({ org }: { org: string }) {
   const { user, can, logout } = useAuth();
+  const [theme, setTheme] = useTheme();
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
   const btn = useRef<HTMLButtonElement>(null);
@@ -437,11 +454,11 @@ function UserMenu({ org }: { org: string }) {
   );
   return (
     <div className="tb-wrap" ref={wrap}>
-      <button ref={btn} type="button" className="tb-avatar-btn" aria-label={`Account menu for ${user.name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button ref={btn} type="button" className="tb-avatar-btn" aria-label={`Account menu for ${user.name}`} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         <InitialsAvatar name={user.name} />
       </button>
       {open && (
-        <div className="tb-pop tb-user" role="menu" aria-label="Account">
+        <div className="tb-pop tb-user" role="dialog" aria-label="Account">
           <div className="tb-user-head">
             <InitialsAvatar name={user.name} size={52} />
             <div className="grow">
@@ -451,9 +468,21 @@ function UserMenu({ org }: { org: string }) {
             </div>
           </div>
           <div className="tb-role">{user.roleLabel}</div>
+          <div className="tb-theme" role="group" aria-labelledby="tb-theme-label">
+            <span id="tb-theme-label" className="tb-theme-label">
+              Theme
+            </span>
+            <div className="seg seg-grid tb-theme-seg">
+              {THEMES.map((t) => (
+                <button key={t.value} type="button" aria-pressed={theme === t.value} onClick={() => setTheme(t.value)}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="tb-menu">
-            {item("/account", "users", "Profile")}
-            {(can("settings.manage") || can("settings.brand")) && item("/settings", "settings", "Preferences")}
+            {item("/account", "users", "Your account")}
+            {(can("settings.manage") || can("settings.brand")) && item("/settings", "settings", "Settings")}
             <button
               type="button"
               className="tb-menu-item"

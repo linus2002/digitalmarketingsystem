@@ -112,8 +112,8 @@ export function RevisionModal({
     let live = true;
     (async () => {
       try {
-        if (revisionId && itemId) {
-          const r = await api<{ revisions: Revision[] }>("/editor/revisions", { query: { item_id: itemId } });
+        if (revisionId && (itemId || postId)) {
+          const r = await api<{ revisions: Revision[] }>("/editor/revisions", { query: itemId ? { item_id: itemId } : { post_id: postId! } });
           const found = r.revisions.find((x) => x.id === revisionId && x.status === "pending");
           if (live && found) setRev(found);
         }
@@ -128,8 +128,11 @@ export function RevisionModal({
     return () => {
       live = false;
     };
-  }, [text, itemId, revisionId]);
+  }, [text, itemId, postId, revisionId]);
 
+  // A batch post's caption only changes when a revision is accepted, so "Revise again" starts from the caption
+  // itself (with your feedback); otherwise accepting would fail because the caption isn't the earlier suggestion.
+  // In the post editor the accepted text goes into the form, so building on the last suggestion is fine there.
   async function doRevise(from: string) {
     setBusy("revise");
     setErr(null);
@@ -245,7 +248,7 @@ export function RevisionModal({
           maxLength={600}
         />
         <div>
-          <Button icon="spark" variant={rev ? "soft" : "primary"} loading={busy === "revise"} disabled={!!busy || !text.trim()} onClick={() => void doRevise(rev ? rev.after_text : text)}>
+          <Button icon="spark" variant={rev ? "soft" : "primary"} loading={busy === "revise"} disabled={!!busy || !text.trim()} onClick={() => void doRevise(rev && !itemId ? rev.after_text : text)}>
             {rev ? "Revise again" : "Revise to my standards"}
           </Button>
         </div>

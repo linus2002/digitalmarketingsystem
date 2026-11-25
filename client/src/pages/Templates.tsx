@@ -87,7 +87,7 @@ export function TemplatesPage() {
   return (
     <>
       <PageHead
-        title="Response templates"
+        title="Reply templates"
         sub="The only wording the assistant sends, and the starting point for team replies. Changing the wording returns a template to draft until someone else on the pharmaceutical team approves it."
         actions={can("templates.manage") && <Button variant="primary" icon="plus" onClick={() => setEdit({ name: "", category: "general", body: "" })}>New template</Button>}
       />

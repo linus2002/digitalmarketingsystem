@@ -8,7 +8,12 @@ import { Icon } from "../components/Icons";
 import { Alert, Avatar, Button, ConfirmModal, LoadError, Modal, PageHead, SelectField, Skeleton, StatusTag, Steps, Tag, TextArea, TextField } from "../components/ui";
 import { MediaPreview, MediaUpload, type UploadedMedia } from "../components/MediaUpload";
 import { RevisionModal } from "../components/EditorBot";
+import { PostBotsCard } from "../components/BotWatch";
+import { BoldField } from "../components/TextFormat";
+import { toFacebookText } from "../lib/fbText";
 import { LeaveGuard } from "../components/LeaveGuard";
+import { PLATFORM, PLATFORM_KEYS, PlatformPicker, platformsOf, TargetList, type PlatformKey, type Target } from "../components/Platforms";
+import { platformProblem } from "../lib/platformRules";
 import "../styles/posts.css";
 
 // ---------------- Shared helpers for the posts pages ----------------
@@ -77,7 +82,7 @@ export function mediaProblem(kind: "image" | "video", raw: string): string | nul
   }
   if (u.protocol !== "https:") return `The ${kind} link must start with https://`;
   if (u.username || u.password) return `The ${kind} link can't contain a username or password.`;
-  if (isPrivateHost(u.hostname)) return `The ${kind} link must be on a public website Facebook can reach (not localhost or a private network).`;
+  if (isPrivateHost(u.hostname)) return `The ${kind} link must be on a public website the platforms can reach (not localhost or a private network).`;
   if (PAGE_HOSTS.test(u.hostname)) return `That's a link to a web page, not the ${kind} file itself. Use a direct link to the file.`;
   if (kind === "video" && !VIDEO_EXT.test(u.pathname)) return "The video link must point directly to a .mp4, .mov, .m4v or .webm file.";
   return null;
@@ -96,7 +101,8 @@ export function composePreview(message: string, hashtags: string[]) {
     present.add(tag.toLowerCase());
     tags.push(tag);
   }
-  return tags.length ? `${text}\n\n${tags.join(" ")}` : text;
+  // **bold** shows as bold letters, as it will on Facebook.
+  return toFacebookText(tags.length ? `${text}\n\n${tags.join(" ")}` : text);
 }
 
 /** A sensible default time on a Philippine day: 09:00, or the next full hour when that's already past today. */
@@ -120,6 +126,7 @@ interface Post {
   video_url: string | null;
   media_id?: number | null;
   media_kind?: "image" | "video" | null;
+  media_mime?: string | null;
   media_name?: string | null;
   media_size?: number | null;
   image_prompt: string | null;
@@ -143,6 +150,7 @@ interface Post {
   approved_by_name: string | null;
   approved_at: string | null;
   updated_at: string;
+  targets?: Target[] | null;
 }
 interface Detail {
   post: Post;
@@ -152,9 +160,9 @@ interface Detail {
   preview: string;
 }
 
-type Form = { title: string; message: string; hashtags: string; image_url: string; video_url: string; media: UploadedMedia | null; image_prompt: string; link_url: string; campaign_id: string; planned: string };
+type Form = { title: string; message: string; hashtags: string; image_url: string; video_url: string; media: UploadedMedia | null; image_prompt: string; link_url: string; campaign_id: string; planned: string; platforms: PlatformKey[] };
 
-const EMPTY: Form = { title: "", message: "", hashtags: "", image_url: "", video_url: "", media: null, image_prompt: "", link_url: "", campaign_id: "", planned: "" };
+const EMPTY: Form = { title: "", message: "", hashtags: "", image_url: "", video_url: "", media: null, image_prompt: "", link_url: "", campaign_id: "", planned: "", platforms: ["facebook"] };
 const EDITABLE = ["draft", "changes_requested", "in_review", "approved", "scheduled", "failed"];
 /** Statuses where a content change sends the post back for approval (matches the server). */
 const RESETS_APPROVAL = ["approved", "scheduled", "in_review", "failed"];
@@ -173,6 +181,12 @@ function stepIndex(status: string) {
   return { draft: 0, changes_requested: 0, in_review: 1, approved: 2, scheduled: 3, publishing: 3, failed: 3, published: 5, cancelled: 0 }[status] ?? 0;
 }
 
+/** "Facebook, Instagram and X" */
+const platformNames = (ps: PlatformKey[]) => {
+  const n = ps.map((p) => PLATFORM[p].short);
+  return n.length > 1 ? `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}` : (n[0] ?? "Facebook");
+};
+
 const splitTags = (s: string) => s.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean).map((h) => (h.startsWith("#") ? h : `#${h}`));
 
 function formFrom(post: Post): Form {
@@ -182,11 +196,12 @@ function formFrom(post: Post): Form {
     hashtags: post.hashtags.join(" "),
     image_url: post.image_url ?? "",
     video_url: post.video_url ?? "",
-    media: post.media_id && post.media_kind ? { id: post.media_id, kind: post.media_kind, name: post.media_name ?? "Uploaded file", size: post.media_size ?? undefined } : null,
+    media: post.media_id && post.media_kind ? { id: post.media_id, kind: post.media_kind, name: post.media_name ?? "Uploaded file", size: post.media_size ?? undefined, mime: post.media_mime ?? null } : null,
     image_prompt: post.image_prompt ?? "",
     link_url: post.link_url ?? "",
     campaign_id: post.campaign_id ? String(post.campaign_id) : "",
     planned: toBizInput(post.scheduled_at),
+    platforms: platformsOf(post),
   };
 }
 
@@ -209,6 +224,8 @@ export function PostEditorPage() {
   const [form, setForm] = useState<Form>(EMPTY);
   const [showLinks, setShowLinks] = useState(false);
   const [revising, setRevising] = useState(false);
+  /** A revision the Editor Bot suggested on its own, opened from "The bots on this post". */
+  const [botRevision, setBotRevision] = useState<number | null>(null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [check, setCheck] = useState<{ issues: string[]; hasDisclaimer: boolean; disclaimer: string } | null>(null);
@@ -286,6 +303,7 @@ export function PostEditorPage() {
     image_prompt: form.image_prompt.trim() || null,
     link_url: form.link_url.trim() || null,
     campaign_id: form.campaign_id ? Number(form.campaign_id) : null,
+    platforms: form.platforms,
     ...(post?.status !== "scheduled" ? { scheduled_at: fromBizInput(form.planned) } : {}),
   });
 
@@ -398,9 +416,28 @@ export function PostEditorPage() {
       (form.image_url.trim() || null) !== (post.image_url ?? null) ||
       (form.video_url.trim() || null) !== (post.video_url ?? null) ||
       (form.media?.id ?? null) !== (post.media_id ?? null) ||
-      (form.link_url.trim() || null) !== (post.link_url ?? null));
+      (form.link_url.trim() || null) !== (post.link_url ?? null) ||
+      [...form.platforms].sort().join() !== [...platformsOf(post)].sort().join());
 
   const preview = composePreview(form.message, splitTags(form.hashtags));
+  // What each ticked platform would say about this post as it stands (the server checks the same rules).
+  const ruleMedia = form.media
+    ? {
+        kind: form.media.kind,
+        // The type the server found in the file itself; the name's extension is only a fallback for older uploads.
+        mime:
+          form.media.mime ??
+          (/\.jpe?g$/i.test(form.media.name) ? "image/jpeg" : /\.png$/i.test(form.media.name) ? "image/png" : /\.gif$/i.test(form.media.name) ? "image/gif" : null),
+      }
+    : form.video_url.trim()
+      ? { kind: "video" as const }
+      : form.image_url.trim()
+        ? { kind: "image" as const }
+        : null;
+  const platformProblems = Object.fromEntries(
+    PLATFORM_KEYS.map((pk) => [pk, platformProblem(pk, { text: toFacebookText(preview), link: form.link_url.trim() || null, media: ruleMedia })]),
+  ) as Record<PlatformKey, string | null>;
+  const publishedOn = (post?.targets ?? []).filter((t) => t.status === "published").map((t) => t.platform);
   const videoUrl = form.video_url.trim();
   const imageUrl = form.image_url.trim();
   const schedIso = fromBizInput(schedAt);
@@ -452,15 +489,17 @@ export function PostEditorPage() {
           )}
           <div className="board stackv" style={{ gap: 16 }}>
             <TextField label="Internal title" value={form.title} onChange={set("title")} disabled={!editable} placeholder="Only your team sees this" maxLength={200} />
-            <TextArea
-              label="Post text"
-              value={form.message}
-              onChange={set("message")}
-              disabled={!editable}
-              rows={8}
-              hint={`${form.message.length} characters`}
-              placeholder="What do you want to say?"
-            />
+            <BoldField value={form.message} onChange={(v) => set("message")({ target: { value: v } })} disabled={!editable}>
+              <TextArea
+                label="Post text"
+                value={form.message}
+                onChange={set("message")}
+                disabled={!editable}
+                rows={8}
+                hint={`${form.message.length} characters`}
+                placeholder="What do you want to say?"
+              />
+            </BoldField>
             {editable && can("content.generate") && (
               <div className="row" style={{ marginTop: -6 }}>
                 <Button size="sm" variant="soft" icon="spark" disabled={!form.message.trim()} onClick={() => setRevising(true)}>
@@ -468,6 +507,19 @@ export function PostEditorPage() {
                 </Button>
                 <span className="note mt0">Checks the text against your standards and suggests a revision.</span>
               </div>
+            )}
+            {botRevision && post && (
+              <RevisionModal
+                text={post.message}
+                postId={post.id}
+                revisionId={botRevision}
+                onAccept={(t) => {
+                  if (!editable) return;
+                  setForm((f) => ({ ...f, message: t }));
+                  setDirty(true);
+                }}
+                onClose={() => setBotRevision(null)}
+              />
             )}
             {revising && (
               <RevisionModal
@@ -480,6 +532,16 @@ export function PostEditorPage() {
                 onClose={() => setRevising(false)}
               />
             )}
+            <PlatformPicker
+              value={form.platforms}
+              onChange={(v) => {
+                setForm((f) => ({ ...f, platforms: v }));
+                setDirty(true);
+              }}
+              problems={platformProblems}
+              locked={publishedOn}
+              disabled={!editable}
+            />
             <TextField label="Hashtags" optional value={form.hashtags} onChange={set("hashtags")} disabled={!editable} placeholder="#CancerAwareness #GetMeds" hint="Separate with spaces. They're added at the end unless already in the text." />
             {check && (check.issues.length > 0 || !check.hasDisclaimer) && (
               <Alert tone="warn" title="Brand and compliance check">
@@ -545,7 +607,7 @@ export function PostEditorPage() {
               disabled={!editable}
               placeholder="https://… (direct .mp4, .mov, .m4v or .webm link)"
               error={videoErr}
-              hint="Posts with a video are published as a video post. Facebook downloads it from this link."
+              hint="Posts with a video are published as a video post. The platforms download it from this link."
             />
             </>
             )}
@@ -586,7 +648,7 @@ export function PostEditorPage() {
         {/* ---- Side panel: live preview, then the workflow ---- */}
         <aside className="stackv first-on-mobile" style={{ gap: 16 }}>
           <div>
-            <p className="label">Facebook preview</p>
+            <p className="label">Preview{form.platforms.includes("facebook") ? " (as on Facebook)" : ""}</p>
             <div className="card soft">
               <div className="row" style={{ gap: 10 }}>
                 <Avatar name={pageName} size="sm" />
@@ -626,13 +688,21 @@ export function PostEditorPage() {
             </div>
           </div>
           {post && (
+            <PostBotsCard
+              postId={post.id}
+              version={String(post.updated_at)}
+              onReview={editable && can("content.generate") ? (rid) => setBotRevision(rid) : undefined}
+              onStatus={() => void detail.reload()}
+            />
+          )}
+          {post && (
             <div className="board">
               <p className="label">Where it is</p>
               <Steps steps={["Draft", "Review", "Approved", "Scheduled", "Published"]} current={stepIndex(status)} failed={status === "failed"} vertical />
               <div className="stackv mt24">
                 {testMode && ["approved", "scheduled", "publishing", "failed"].includes(status) && (
                   <Alert tone="warn" title="Test mode is on">
-                    It will be marked published but not sent to Facebook.
+                    It will be marked published but not sent to any platform.
                   </Alert>
                 )}
                 {(status === "draft" || status === "changes_requested") && can("posts.edit") && (
@@ -696,21 +766,23 @@ export function PostEditorPage() {
                         : `That's ${ago(post.scheduled_at)}. Approved by ${post.approved_by_name ?? "—"}.`}
                     </Alert>
                     {can("posts.schedule") && (
-                      <>
-                        <Button variant="secondary" onClick={() => setConfirm("publish")}>
-                          Publish now
-                        </Button>
-                        <Button variant="quiet" loading={busy === "unschedule"} onClick={() => setConfirm("unschedule")}>
-                          Unschedule
-                        </Button>
-                      </>
+                      <Button variant="secondary" icon="send" onClick={() => setConfirm("publish")}>
+                        Publish now
+                      </Button>
                     )}
                   </>
                 )}
                 {["approved", "scheduled"].includes(status) && can("posts.schedule") && (
-                  <Button variant="quiet" icon="x" loading={busy === "cancel"} onClick={() => setConfirm("cancel")}>
-                    Cancel post
-                  </Button>
+                  <div className="pe-minor-actions">
+                    {status === "scheduled" && (
+                      <Button size="sm" variant="soft" icon="clock" loading={busy === "unschedule"} onClick={() => setConfirm("unschedule")}>
+                        Unschedule
+                      </Button>
+                    )}
+                    <Button size="sm" variant="soft" icon="x" loading={busy === "cancel"} onClick={() => setConfirm("cancel")}>
+                      Cancel post
+                    </Button>
+                  </div>
                 )}
                 {status === "publishing" && (
                   <Alert tone="info" title="Publishing now">
@@ -747,16 +819,37 @@ export function PostEditorPage() {
                     {status === "draft" || status === "changes_requested" ? "Delete draft" : "Delete post"}
                   </Button>
                 )}
+                {!!post.targets?.length && post.targets.some((t) => t.status !== "pending") && (
+                  <TargetList
+                    targets={post.targets}
+                    busy={!!busy}
+                    onCheck={
+                      can("posts.schedule")
+                        ? (pf, action) =>
+                            void run(
+                              `check-${pf}`,
+                              () => api(`/posts/${id}/targets/${pf}`, { body: { action } }),
+                              action === "posted" ? "Marked as posted" : "It will be sent again when you press Try again",
+                            )
+                        : undefined
+                    }
+                  />
+                )}
                 {status === "published" && (
                   <>
                     <Alert tone="good" title={`Published ${fmtBiz(post.published_at)} (${BUSINESS_TZ_LABEL})`}>
-                      {post.fb_post_id?.startsWith("dryrun_") ? "Test mode: this wasn't really sent to Facebook." : `Facebook post ID ${post.fb_post_id}`}
+                      {post.fb_post_id?.startsWith("dryrun_") || post.targets?.some((t) => t.url === null && t.status === "published" && testMode)
+                        ? "Test mode: this wasn't really sent to the platforms."
+                        : `On ${platformsOf(post).length} platform${platformsOf(post).length === 1 ? "" : "s"}.`}
                     </Alert>
-                    {detail.data?.stats?.permalink_url && (
-                      <a className="btn btn-secondary" href={detail.data.stats.permalink_url} target="_blank" rel="noreferrer">
-                        View on Facebook
-                      </a>
-                    )}
+                    {/* A link to the live post on each platform that gave one */}
+                    {(post.targets ?? [])
+                      .filter((tg) => tg.status === "published" && (tg.url || (tg.platform === "facebook" && detail.data?.stats?.permalink_url)))
+                      .map((tg) => (
+                        <a key={tg.platform} className="btn btn-secondary" href={(tg.platform === "facebook" && detail.data?.stats?.permalink_url) || tg.url!} target="_blank" rel="noreferrer">
+                          View on {PLATFORM[tg.platform].short}
+                        </a>
+                      ))}
                   </>
                 )}
               </div>
@@ -820,7 +913,7 @@ export function PostEditorPage() {
                     </span>
                     <div>
                       <b>Attempt {l.attempt}</b>
-                      <div className="meta">{l.status === "dry_run" ? "Test mode: not sent to Facebook" : l.message}</div>
+                      <div className="meta">{l.status === "dry_run" ? l.message || "Test mode: not sent" : l.message}</div>
                     </div>
                     <time>{fmtDate(l.created_at, true)}</time>
                   </li>
@@ -888,6 +981,7 @@ export function PostEditorPage() {
           title={`Cancel “${post?.title}”?`}
           warning="It won't be published. To publish it later it would have to be written and approved again."
           confirmLabel="Cancel post"
+          cancelLabel="Keep it"
           busy={busy === "cancel"}
           onClose={() => setConfirm(null)}
           onConfirm={async () => {
@@ -923,7 +1017,7 @@ export function PostEditorPage() {
       )}
       {confirm === "publish" && (
         <Modal
-          title={testMode ? "Publish now (Test mode)?" : "Publish to Facebook now?"}
+          title={testMode ? "Publish now (Test mode)?" : `Publish to ${platformNames(form.platforms)} now?`}
           onClose={() => setConfirm(null)}
           actions={
             <>
@@ -944,10 +1038,13 @@ export function PostEditorPage() {
         >
           {testMode ? (
             <Alert tone="warn" title="Test mode is on">
-              It will be marked published but not sent to Facebook.
+              It will be marked published on {platformNames(form.platforms)}, but nothing is sent.
             </Alert>
           ) : (
-            <p className="muted mt0">It goes out on {pageName === "Your Page" ? "your Facebook Page" : pageName} within the next minute, exactly as approved.</p>
+            <p className="muted mt0">
+              It goes out on {platformNames(form.platforms)}
+              {form.platforms.includes("facebook") && pageName !== "Your Page" ? ` (Facebook Page: ${pageName})` : ""} within the next minute, exactly as approved.
+            </p>
           )}
         </Modal>
       )}

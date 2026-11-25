@@ -46,6 +46,10 @@ export function ReportsPage() {
         sub={`Published posts, reach and engagement by campaign, plus how reliably scheduled posts went out. Dates are ${BUSINESS_TZ_LABEL}; both days are included.`}
         actions={
           <>
+            <Link className="btn btn-primary" style={{ alignSelf: "flex-end" }} to="/reports/digest">
+              <Icon name="spark" />
+              Weekly digest
+            </Link>
             <TextField label="From" type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} error={rangeErr} />
             <TextField label="To (included)" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
             {rangeErr ? (
