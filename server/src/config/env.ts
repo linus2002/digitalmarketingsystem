@@ -28,8 +28,8 @@ const schema = z.object({
   SESSION_HOURS: z.coerce.number().positive().default(10),
   COOKIE_SECURE: bool(false),
   TRUST_PROXY: bool(false),
-  CLIENT_ORIGIN: z.string().default("http://localhost:5173"),
-  PUBLIC_FORM_ORIGINS: csv("http://localhost:5173"),
+  CLIENT_ORIGIN: z.string().default("http://localhost:5190"),
+  PUBLIC_FORM_ORIGINS: csv("http://localhost:5190"),
   PRIVACY_POLICY_URL: z.string().default("https://www.example.com/privacy"),
   BUSINESS_NAME: z.string().default("GetMeds"),
 

@@ -108,7 +108,7 @@ copy .env.example .env
 npm run gen:keys            # paste the three lines into .env
 notepad .env                # set DATABASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD (12+ chars)
 npm run db:setup            # creates tables, settings, trend sources, templates, the admin user
-npm run dev                 # API on :4000, app on http://localhost:5173
+npm run dev                 # API on :4000, app on http://localhost:5190
 ```
 
 Sign in with the admin account, then **remove `ADMIN_PASSWORD` from `.env`**. Add your team in **Users and roles**.

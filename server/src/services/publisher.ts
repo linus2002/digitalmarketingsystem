@@ -279,12 +279,13 @@ export async function publishDuePosts() {
     // received it, so it's marked failed for a person to check rather than risk a duplicate post.
     // (Long video uploads keep updated_at fresh while they run.)
     const stale = await q(
-      `UPDATE posts SET status='failed', last_error='Publishing was interrupted. Check each platform before retrying, to avoid a duplicate.', uncertain=true, updated_at=now()
+      `UPDATE posts SET status='failed', last_error='Publishing was interrupted. Check each platform before retrying, to avoid a duplicate.', updated_at=now()
        WHERE status='publishing' AND updated_at < now() - interval '30 minutes' RETURNING id`,
     );
+    // The platform that was mid-send may have received it: "uncertain", so Try again skips it until someone checks.
     if (stale.length)
       await q(
-        `UPDATE post_targets SET status='failed', last_error='Interrupted while posting. Check this platform before retrying, to avoid a duplicate.', updated_at=now()
+        `UPDATE post_targets SET status='failed', last_error='Interrupted while posting. Check this platform before retrying, to avoid a duplicate.', uncertain=true, updated_at=now()
          WHERE status='publishing' AND post_id = ANY($1::int[])`,
         [stale.map((r) => r.id)],
       );
