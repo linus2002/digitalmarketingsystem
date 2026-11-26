@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type Key
 import { Link } from "react-router-dom";
 import { Icon, type IconName } from "./Icons";
 import { initials, type Tone } from "../lib/format";
+import { OFFLINE_MESSAGE } from "../lib/api";
 
 // ---------------- Buttons ----------------
 type BtnVariant = "primary" | "secondary" | "soft" | "quiet" | "danger";
@@ -418,6 +419,18 @@ export function Skeleton({ rows = 3 }: { rows?: number }) {
 }
 
 export function LoadError({ error, retry }: { error: string; retry?: () => void }) {
+  // The server couldn't be reached: not a fault on this page, and it's being retried automatically.
+  if (error === OFFLINE_MESSAGE)
+    return (
+      <Alert tone="warn" title="Reconnecting to the server…">
+        {error}{" "}
+        {retry && (
+          <button className="btn btn-quiet btn-sm" onClick={retry} style={{ marginLeft: 6 }}>
+            Try now
+          </button>
+        )}
+      </Alert>
+    );
   return (
     <Alert tone="bad" title="This couldn't be loaded">
       {error}{" "}

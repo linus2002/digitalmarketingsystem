@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { Icon, type IconName } from "./Icons";
 import { TopBar } from "./TopBar";
 import { useAuth } from "../lib/auth";
-import { api } from "../lib/api";
+import { api, serverOffline } from "../lib/api";
 import { readCollapsed, saveCollapsed } from "../lib/theme";
 
 interface Item {
@@ -88,6 +88,51 @@ function BannerBadge({ kind }: { kind: BadgeKind }) {
       <circle cx="9" cy="24" r="5" fill="var(--green)" />
       <circle cx="15.5" cy="27.5" r="4.5" fill={`url(#${grad})`} stroke="#fff" strokeWidth="1.2" />
     </svg>
+  );
+}
+
+/**
+ * Shown while the server can't be reached (stopped, restarting, network down). Pages keep what they already show
+ * and reload on their own; this checks every few seconds and disappears, with a short "back" note, once it answers.
+ */
+function ConnectionBanner() {
+  const [down, setDown] = useState(serverOffline);
+  const [back, setBack] = useState(false);
+  useEffect(() => {
+    const off = () => {
+      setDown(true);
+      setBack(false);
+    };
+    const on = () => {
+      setDown(false);
+      setBack(true);
+      window.setTimeout(() => setBack(false), 4000);
+    };
+    window.addEventListener("server-offline", off);
+    window.addEventListener("server-online", on);
+    return () => {
+      window.removeEventListener("server-offline", off);
+      window.removeEventListener("server-online", on);
+    };
+  }, []);
+  // While down, knock every few seconds so everything recovers as soon as the server is back.
+  useEffect(() => {
+    if (!down) return;
+    const t = window.setInterval(() => void api("/health").catch(() => undefined), 4000);
+    return () => window.clearInterval(t);
+  }, [down]);
+  if (!down && !back) return null;
+  return (
+    <div className="sys-banners">
+      <div className={`sys-banner ${down ? "warn" : "info"}`} role="status" aria-live="polite">
+        <span className="grow sys-body">
+          <strong className="sys-title">{down ? "Reconnecting to the server…" : "Connected again"}</strong>
+          <span className="sys-text">
+            {down ? "The server isn't answering right now. Your work on this page stays put, and everything reloads by itself when it's back." : "Everything is up to date."}
+          </span>
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -392,6 +437,7 @@ export function Layout() {
           }
         />
         <main className="main" id="main" ref={mainRef} tabIndex={-1}>
+          <ConnectionBanner />
           <StatusBanner status={status} isAdmin={user?.role === "admin"} />
           <Outlet />
         </main>

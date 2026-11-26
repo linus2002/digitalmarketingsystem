@@ -109,15 +109,42 @@ if (isProd && fs.existsSync(clientDist)) {
 app.use(errorHandler);
 
 async function main() {
-  try {
-    await pool.query("SELECT 1");
-  } catch (err) {
-    log.error("Can't connect to PostgreSQL. Check DATABASE_URL in .env and that PostgreSQL is running.", { error: errMsg(err) });
-    process.exit(1);
+  // The database may still be starting (e.g. `npm run db:local` launched at the same time): wait up to 30 seconds.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await pool.query("SELECT 1");
+      break;
+    } catch (err) {
+      if (attempt >= 15) {
+        log.error("Can't connect to PostgreSQL. Check DATABASE_URL in .env and that PostgreSQL is running (npm run db:local).", { error: errMsg(err) });
+        process.exit(1);
+      }
+      if (attempt === 1) log.warn("Waiting for PostgreSQL to accept connections…", { error: errMsg(err) });
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   }
   await migrate();
-  const server = app.listen(env.PORT, env.HOST, () => {
-    log.info(`API listening on http://${env.HOST}:${env.PORT}`, { env: env.NODE_ENV });
+  // On a restart the previous process can hold the port for a moment: try again for a while instead of dying.
+  const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
+    let tries = 0;
+    const attempt = () => {
+      const s = app.listen(env.PORT, env.HOST, () => {
+        log.info(`API listening on http://${env.HOST}:${env.PORT}`, { env: env.NODE_ENV });
+        resolve(s);
+      });
+      s.once("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE" && ++tries < 20) {
+          if (tries === 1) log.warn(`Port ${env.PORT} is busy; waiting for it to be free (another copy of the API may still be running)…`);
+          setTimeout(attempt, 1500);
+          return;
+        }
+        log.error(err.code === "EADDRINUSE" ? `Port ${env.PORT} is still in use. Stop the other copy of the API, or set PORT in .env.` : "The API couldn't start", {
+          error: errMsg(err),
+        });
+        process.exit(1);
+      });
+    };
+    attempt();
   });
   startJobs();
   let stopping = false;
@@ -134,5 +161,11 @@ async function main() {
 }
 
 process.on("unhandledRejection", (err) => log.error("Unhandled promise rejection", { error: errMsg(err) }));
+// A crash is always logged (never a silent stop). The process then exits, because its state can't be trusted;
+// `npm start` restarts it (scripts/supervise.mjs) and in development tsx restarts it on the next save.
+process.on("uncaughtException", (err) => {
+  log.error("The API crashed", { error: errMsg(err), stack: (err as Error)?.stack?.split("\n").slice(0, 6).join(" | ") });
+  setTimeout(() => process.exit(1), 200).unref();
+});
 
 void main();
