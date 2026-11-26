@@ -36,6 +36,7 @@
   --info: #153f91;   --info-bg: #e8effd;
 
   --r-pill: 999px;
+  --r-btn: 10px;   /* buttons: rounded corners, not pill ends */
   --r-card: 22px;
   --r-panel: 28px;
   --line: 1.5px solid var(--blue);
@@ -105,8 +106,8 @@ h2.section { font-size: 19px; font-weight: 600; margin: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
 /* ---- Buttons ---- */
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 44px; padding: 0 22px; border-radius: var(--r-pill); border: 1.5px solid transparent; font-weight: 500; font-size: 14px; cursor: pointer; transition: background .15s, border-color .15s, color .15s; white-space: nowrap; text-decoration: none; }
-.btn svg { width: 18px; height: 18px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 40px; padding: 0 18px; border-radius: var(--r-btn); border: 1.5px solid transparent; font-weight: 500; font-size: 14px; cursor: pointer; transition: background .15s, border-color .15s, color .15s; white-space: nowrap; text-decoration: none; }
+.btn svg { width: 17px; height: 17px; }
 .btn-primary { background: var(--primary); color: #fff; }
 .btn-primary:hover { background: var(--primary-hover); }
 .btn-secondary { background: var(--canvas); border-color: var(--primary); color: var(--primary); }
@@ -117,7 +118,8 @@ h2.section { font-size: 19px; font-weight: 600; margin: 0; }
 .btn-quiet:hover { background: var(--soft); color: var(--ink); }
 .btn-danger { background: var(--bad); color: #fff; }
 .btn-danger:hover { background: #941c13; }
-.btn-sm { height: 34px; padding: 0 16px; font-size: 13px; }
+.btn-sm { height: 32px; padding: 0 13px; font-size: 13px; border-radius: 8px; }
+.btn-sm svg { width: 15px; height: 15px; }
 .btn-icon { width: 40px; height: 40px; padding: 0; border-radius: 50%; background: transparent; color: var(--ink-3); border-color: transparent; }
 .btn-icon:hover { background: var(--mint); color: var(--ink); }
 .btn-icon.danger:hover { background: var(--bad-bg); color: var(--bad); }
@@ -345,7 +347,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .side-foot .who b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .side-foot .who span { display: block; color: var(--ink-3); font-size: 12px; }
 .side-actions { display: flex; gap: 4px; flex-wrap: wrap; }
-.side-actions .btn { padding: 0 10px; height: 32px; font-size: 12.5px; gap: 6px; }
+.side-actions .btn { padding: 0 10px; height: 32px; font-size: 12.5px; gap: 6px; border-radius: 8px; }
 .side-actions .btn svg { width: 15px; height: 15px; }
 
 /* ---- Collapse button and the collapsed icon rail (wide screens only) ---- */
@@ -772,5 +774,5 @@ html:has(.lp) { scroll-behavior: smooth; scroll-padding-top: 76px; }
 .fmt-btn:hover { border-color: var(--blue); color: var(--blue); }
 .fmt-btn:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .fmt-hint { font-size: 12px; color: var(--ink-3); }
-.toast-action { flex: none; height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,.5); background: transparent; color: #fff; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.toast-action { flex: none; height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.5); background: transparent; color: #fff; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .toast-action:hover { background: rgba(255,255,255,.12); }
