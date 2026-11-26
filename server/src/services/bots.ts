@@ -23,6 +23,7 @@ async function chatJsonRetry<T>(opts: Parameters<typeof chatJson>[0]): Promise<T
   }
 }
 import { brandBrief, SAFETY } from "./brandPrompt.js";
+import { defaultPlatformsFor } from "./platforms/index.js";
 import { checkContent } from "./guardrails.js";
 import { composeMessage } from "./publisher.js";
 
@@ -828,8 +829,12 @@ export async function handOff(batchId: number, user: { id: number; role: string 
         ],
         c,
       );
-      // Bot batches post to the Facebook Page; more platforms can be ticked on the post before it goes out.
-      await q("INSERT INTO post_targets (post_id, platform) VALUES ($1, 'facebook') ON CONFLICT DO NOTHING", [post!.id], c);
+      // The default platforms that fit this post (e.g. no YouTube without a video). Posts that go straight to the
+      // schedule also skip platforms that aren't connected yet, so they can't fail for that reason.
+      const mime = it.media_id ? ((await one<{ mime: string }>("SELECT mime FROM media WHERE id=$1", [it.media_id], c))?.mime ?? null) : null;
+      const media = it.media_type === "video" || it.media_type === "image" ? { kind: it.media_type as "image" | "video", mime } : null;
+      const platforms = await defaultPlatformsFor({ text: [message, ...(it.hashtags ?? [])].join(" "), link: null, media }, { connectedOnly: mode === "schedule" });
+      await q("INSERT INTO post_targets (post_id, platform) SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING", [post!.id, platforms], c);
       const note = `Sent by the Posting Bot from the batch "${batch.name}". Planned for ${fmtPh(at)} (Philippine time).`;
       if (mode === "schedule") {
         await q("INSERT INTO post_reviews (post_id, user_id, decision, comment) VALUES ($1,$2,'approved',$3)", [post!.id, user.id, note], c);

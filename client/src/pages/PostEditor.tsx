@@ -271,6 +271,14 @@ export function PostEditorPage() {
     setDirty(false);
   }, [isNew, params]);
 
+  // A new post starts with the default platforms an admin chose (Settings → Social accounts), unless the
+  // writer has already changed anything. Facebook if they can't be loaded.
+  const defaults = useLoad(() => (isNew ? api<{ platforms: PlatformKey[] }>("/platforms/defaults") : Promise.resolve(null)), [isNew]);
+  useEffect(() => {
+    if (!isNew || dirtyRef.current || !defaults.data?.platforms.length) return;
+    setForm((f) => ({ ...f, platforms: defaults.data!.platforms }));
+  }, [isNew, defaults.data, params]);
+
   // Live brand-rule check while typing; only the newest answer counts.
   const checkSeq = useRef(0);
   useEffect(() => {

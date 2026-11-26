@@ -17,11 +17,13 @@ import {
   ctxFor,
   findInstagramAccount,
   getCreds,
+  getDefaultPlatforms,
   isPlatform,
   PLATFORM_IDS,
   platformSummaries,
   redirectUri,
   saveCreds,
+  saveDefaultPlatforms,
   type PlatformId,
 } from "../services/platforms/index.js";
 
@@ -49,6 +51,19 @@ async function checkAndRemember(id: PlatformId, userId: number | null): Promise<
 }
 
 /** Which platforms posts can go to (the editor and calendar use this). */
+/** The platforms new posts start with. Everyone who can see posts reads it (the editor ticks them for a new post). */
+platformsRouter.get("/defaults", requirePerm("posts.view"), async (_req, res) => {
+  res.json({ platforms: await getDefaultPlatforms() });
+});
+
+/** Admins choose them in Settings → Social accounts. At least one. */
+platformsRouter.put("/defaults", requirePerm("settings.manage"), async (req, res) => {
+  const { platforms } = parse(z.object({ platforms: z.array(z.enum(PLATFORM_IDS)).min(1, "Pick at least one platform.").max(PLATFORM_IDS.length) }), req.body);
+  await saveDefaultPlatforms(platforms, req.user!.id);
+  await audit(req, "settings.default_platforms", "settings", "platforms.defaults", { platforms });
+  res.json({ platforms: await getDefaultPlatforms() });
+});
+
 platformsRouter.get("/connected", requirePerm("posts.view"), async (_req, res) => {
   res.json({ connected: await connectedPlatforms(), testMode: env.PUBLISH_DRY_RUN });
 });

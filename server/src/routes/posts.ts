@@ -11,7 +11,7 @@ import { postBotStatus } from "../services/teamReview.js";
 import { toFacebookText } from "../lib/fbText.js";
 import { env } from "../config/env.js";
 import { platformProblem } from "../lib/platformRules.js";
-import { connectedPlatforms, PLATFORM_IDS, PLATFORM_LABEL, type PlatformId } from "../services/platforms/index.js";
+import { connectedPlatforms, defaultPlatformsFor, getDefaultPlatforms, PLATFORM_IDS, PLATFORM_LABEL, type PlatformId } from "../services/platforms/index.js";
 
 export const postsRouter = Router();
 
@@ -293,7 +293,9 @@ postsRouter.post("/import", requirePerm("posts.edit"), async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Imported from a spreadsheet',$9,$9) RETURNING id`,
       [candidate.title, candidate.message, candidate.hashtags, candidate.image_url, candidate.video_url, candidate.link_url, campaignId, candidate.scheduled_at, req.user!.id],
     );
-    await q("INSERT INTO post_targets (post_id, platform) VALUES ($1, 'facebook') ON CONFLICT DO NOTHING", [post!.id]);
+    const media = candidate.video_url ? { kind: "video" as const } : candidate.image_url ? { kind: "image" as const } : null;
+    const text = [candidate.message, ...candidate.hashtags].join(" ");
+    await setPlatforms(post!.id, await defaultPlatformsFor({ text, link: candidate.link_url, media }));
     created.push({ row: r.row, id: post!.id, title: candidate.title });
   }
   await audit(req, "post.imported", "post", null, { created: created.length, failed: errors.length });
@@ -327,6 +329,7 @@ postsRouter.post("/", requirePerm("posts.edit"), async (req, res) => {
   const b = parse(postBody, req.body);
   if (mediaCount(b.image_url, b.video_url, b.media_id) > 1) throw badRequest(BOTH_MEDIA);
   await checkMediaExists(b.media_id);
+  const platforms = b.platforms ?? (await getDefaultPlatforms());
   const post = await tx(async (c) => {
     const row = await one<{ id: number }>(
       `INSERT INTO posts (title, message, hashtags, image_url, image_prompt, link_url, campaign_id, scheduled_at, ai_generated, source_topic, created_by, video_url, last_edited_by, media_id)
@@ -334,10 +337,10 @@ postsRouter.post("/", requirePerm("posts.edit"), async (req, res) => {
       [b.title, b.message, b.hashtags, b.image_url ?? null, b.image_prompt ?? null, b.link_url ?? null, b.campaign_id ?? null, b.scheduled_at ?? null, b.ai_generated ?? false, b.source_topic ?? null, req.user!.id, b.video_url ?? null, b.media_id ?? null],
       c,
     );
-    await setPlatforms(row!.id, b.platforms ?? ["facebook"], c);
+    await setPlatforms(row!.id, platforms, c);
     return row;
   });
-  await audit(req, "post.created", "post", post!.id, { platforms: b.platforms ?? ["facebook"] });
+  await audit(req, "post.created", "post", post!.id, { platforms });
   res.status(201).json({ post: await load(post!.id) });
 });
 

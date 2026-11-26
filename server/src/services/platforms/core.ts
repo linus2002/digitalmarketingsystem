@@ -88,6 +88,18 @@ export interface Connector {
   publish(ctx: Ctx, input: PublishInput): Promise<PublishResult>;
 }
 
+// ---------------------------------------------------------------- default platforms for new posts
+
+/** The platforms a new post starts with (set by an admin in Settings → Social accounts). Facebook if never set. */
+export async function getDefaultPlatforms(): Promise<PlatformId[]> {
+  const v = await getSetting<unknown>("platforms.defaults", null);
+  const list = Array.isArray(v) ? PLATFORM_IDS.filter((p) => v.includes(p)) : [];
+  return list.length ? list : ["facebook"];
+}
+export async function saveDefaultPlatforms(list: PlatformId[], userId: number) {
+  await setSetting("platforms.defaults", PLATFORM_IDS.filter((p) => list.includes(p)), userId);
+}
+
 // ---------------------------------------------------------------- stored credentials (encrypted)
 
 interface Stored {

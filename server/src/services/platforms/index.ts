@@ -1,5 +1,6 @@
 import { env } from "../../config/env.js";
-import { getCreds, getStored, PLATFORM_IDS, publicMediaUrl, redirectUri, type Connector, type PlatformId } from "./core.js";
+import { getCreds, getDefaultPlatforms, getStored, PLATFORM_IDS, publicMediaUrl, redirectUri, type Connector, type PlatformId } from "./core.js";
+import { platformProblem, type RuleInput } from "../../lib/platformRules.js";
 import { facebook, instagram } from "./meta.js";
 import { linkedin } from "./linkedin.js";
 import { tiktok } from "./tiktok.js";
@@ -12,6 +13,19 @@ export { findInstagramAccount } from "./meta.js";
 export const CONNECTORS: Record<PlatformId, Connector> = { facebook, instagram, twitter, youtube, tiktok, linkedin };
 
 export const isPlatform = (v: unknown): v is PlatformId => typeof v === "string" && (PLATFORM_IDS as readonly string[]).includes(v);
+
+/**
+ * The default platforms that fit a post made without a person picking them (bot batches, spreadsheet imports):
+ * platforms the post can't go to as it is (e.g. YouTube without a video) are left out, and with `connectedOnly`
+ * (posts that go straight to the schedule) so are platforms that aren't connected while Test mode is off.
+ * Never empty: Facebook if nothing fits.
+ */
+export async function defaultPlatformsFor(post: RuleInput, opts: { connectedOnly?: boolean } = {}): Promise<PlatformId[]> {
+  const defaults = await getDefaultPlatforms();
+  const connected = opts.connectedOnly && !env.PUBLISH_DRY_RUN ? await connectedPlatforms() : null;
+  const fit = defaults.filter((p) => !platformProblem(p, post) && (!connected || connected[p]));
+  return fit.length ? fit : ["facebook"];
+}
 
 /** Which platforms can be posted to right now. */
 export async function connectedPlatforms(): Promise<Record<PlatformId, boolean>> {
