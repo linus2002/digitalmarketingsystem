@@ -23,7 +23,8 @@ async function chatJsonRetry<T>(opts: Parameters<typeof chatJson>[0]): Promise<T
   }
 }
 import { brandBrief, SAFETY } from "./brandPrompt.js";
-import { defaultPlatformsFor } from "./platforms/index.js";
+import { batchPlatforms, PLATFORM_LABEL, platformsThatFit } from "./platforms/index.js";
+import { platformProblem } from "../lib/platformRules.js";
 import { checkContent } from "./guardrails.js";
 import { composeMessage } from "./publisher.js";
 
@@ -200,7 +201,7 @@ async function bookedTimes(batchId: number): Promise<{ at: Date; label: string }
 
 export async function loadBatch(id: number) {
   const batch = await one(
-    `SELECT b.id, b.name, b.schedule, b.campaign_id, b.checked_at, b.handed_off_at, b.created_by, b.created_at, b.updated_at, c.name AS campaign_name
+    `SELECT b.id, b.name, b.schedule, b.platforms, b.campaign_id, b.checked_at, b.handed_off_at, b.created_by, b.created_at, b.updated_at, c.name AS campaign_name
      FROM bot_batches b LEFT JOIN campaigns c ON c.id=b.campaign_id WHERE b.id=$1`,
     [id],
   );
@@ -469,6 +470,12 @@ export async function checkBatch(batchId: number, userId: number | null) {
   const todo = pending(items);
   const booked = await bookedTimes(batchId);
   const gapMs = r.minGapMinutes * 60_000;
+  // The batch's platforms, and the real type of uploaded files (Instagram takes JPG images only).
+  const chosen = (await batchPlatforms(batch)).platforms;
+  const mediaIds = todo.map((i) => i.media_id).filter(Boolean);
+  const mimes = new Map(
+    mediaIds.length ? (await q<{ id: number; mime: string }>("SELECT id, mime FROM media WHERE id = ANY($1::int[])", [mediaIds])).map((m) => [m.id, m.mime]) : [],
+  );
   let bad = 0;
   let warn = 0;
   let ready = 0;
@@ -486,6 +493,15 @@ export async function checkBatch(batchId: number, userId: number | null) {
     // An uploaded file is sent to Facebook directly: no link to check.
     const media = item.media_id ? null : mediaProblem(item.media_url, item.media_type);
     if (media) issues.push(media);
+    // Chosen platforms this post can't go to as it is: it will skip them (a warning, not a blocker).
+    if (caption) {
+      const kind = item.media_type === "image" || item.media_type === "video" ? (item.media_type as "image" | "video") : null;
+      const post = { text: full, link: null, media: kind ? { kind, mime: item.media_id ? (mimes.get(item.media_id) ?? null) : null } : null };
+      const skips = chosen.map((p) => ({ p, why: platformProblem(p, post) })).filter((x) => x.why);
+      if (skips.length === chosen.length)
+        issues.push({ level: "warn", text: `None of this batch's platforms fit this post, so it goes to Facebook. ${skips.map((x) => x.why).join(" ")}` });
+      else for (const x of skips) issues.push({ level: "warn", text: `Skips ${PLATFORM_LABEL[x.p]}: ${x.why}` });
+    }
 
     if (!item.scheduled_at) issues.push({ level: "bad", text: "No posting time yet." });
     else {
@@ -781,6 +797,8 @@ export async function handOff(batchId: number, user: { id: number; role: string 
   await checkBatch(batchId, user.id);
   const { batch, items } = await loadBatch(batchId);
   const [brand, rules] = await Promise.all([getBrand(), getRules()]);
+  // The platforms chosen for this batch (or the defaults); each post keeps the ones it can go to.
+  const chosen = (await batchPlatforms(batch)).platforms;
   const todo = pending(items);
   const skipped: { id: number; reason: string }[] = [];
   let created = 0;
@@ -833,7 +851,7 @@ export async function handOff(batchId: number, user: { id: number; role: string 
       // schedule also skip platforms that aren't connected yet, so they can't fail for that reason.
       const mime = it.media_id ? ((await one<{ mime: string }>("SELECT mime FROM media WHERE id=$1", [it.media_id], c))?.mime ?? null) : null;
       const media = it.media_type === "video" || it.media_type === "image" ? { kind: it.media_type as "image" | "video", mime } : null;
-      const platforms = await defaultPlatformsFor({ text: [message, ...(it.hashtags ?? [])].join(" "), link: null, media }, { connectedOnly: mode === "schedule" });
+      const platforms = await platformsThatFit(chosen, { text: [message, ...(it.hashtags ?? [])].join(" "), link: null, media }, { connectedOnly: mode === "schedule" });
       await q("INSERT INTO post_targets (post_id, platform) SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING", [post!.id, platforms], c);
       const note = `Sent by the Posting Bot from the batch "${batch.name}". Planned for ${fmtPh(at)} (Philippine time).`;
       if (mode === "schedule") {

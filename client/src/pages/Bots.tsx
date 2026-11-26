@@ -15,6 +15,7 @@ import { toFacebookText } from "../lib/fbText";
 import { BotOffice } from "../components/OfficeScene";
 import { LeaveGuard } from "../components/LeaveGuard";
 import { docxText } from "../lib/docxText";
+import { PLATFORM, PLATFORM_KEYS, PlatformIcon, useConnectedPlatforms, type PlatformKey } from "../components/Platforms";
 import "../styles/bots.css";
 
 // ---------------------------------------------------------------- types
@@ -98,6 +99,9 @@ interface BatchData {
   items: Item[];
   schedule: Schedule;
   run: Run | null;
+  /** Where this batch's posts go: the platforms chosen for it, or the default platforms. */
+  platforms?: PlatformKey[];
+  usesDefaults?: boolean;
 }
 
 /** Limits that match the server (requests stay well under its 1 MB limit). */
@@ -441,7 +445,7 @@ export function BotsPage() {
           )}
         </div>
         <aside ref={panelRef} className="board stackv bot-panel" style={{ gap: 16 }} aria-label={`${BOTS[bot].name} panel`}>
-          <BotPanel bot={bot} view={views[bot]} o={o} data={data} editable={editable} canBrand={canBrand} admin={admin} onChange={refresh} onDirty={setDirty} />
+          <BotPanel bot={bot} view={views[bot]} o={o} data={data} editable={editable} canBrand={canBrand} admin={admin} onChange={refresh} onDirty={setDirty} setBatch={(d) => batch.setData({ id: d.batch.id, d })} />
         </aside>
       </div>
 
@@ -1305,6 +1309,16 @@ function HandoffModal({ data, o, onClose, onDone }: { data: BatchData; o: Overvi
         {pending.length - blocked} of {pending.length} look ready{blocked ? `, ${blocked} need fixing` : ""}
         {warned ? `, ${warned} have warnings for the reviewer` : ""}.{o.dryRun ? " Test mode is on, so nothing is sent to any platform." : ""}
       </p>
+      <p className="note mt0 hand-pf">
+        <span>Posts to</span>
+        {(data.platforms ?? ["facebook"]).map((p) => (
+          <span key={p} className="hand-pf-item">
+            <PlatformIcon p={p} size={16} />
+            {PLATFORM[p].short}
+          </span>
+        ))}
+        <span>(each post skips a platform it can't go to; change them in the Posting Bot panel).</span>
+      </p>
     </Modal>
   );
 }
@@ -1321,6 +1335,7 @@ function BotPanel({
   admin,
   onChange,
   onDirty,
+  setBatch,
 }: {
   bot: BotName;
   view: BotView;
@@ -1331,6 +1346,7 @@ function BotPanel({
   admin: boolean;
   onChange: () => Promise<unknown>;
   onDirty: (d: boolean) => void;
+  setBatch: (d: BatchData) => void;
 }) {
   const tone = view.state === "attention" ? "bad" : view.state === "working" ? "info" : view.state === "done" ? "good" : view.state === "off" ? "warn" : "mute";
   return (
@@ -1350,7 +1366,7 @@ function BotPanel({
       {bot === "style" && <StylePanel o={o} canEdit={canBrand} onChange={onChange} />}
       {bot === "scheduler" && <SchedulerPanel data={data} editable={editable} onChange={onChange} onDirty={onDirty} />}
       {bot === "checker" && <CheckerPanel o={o} data={data} editable={editable} onChange={onChange} />}
-      {bot === "posting" && <PostingPanel o={o} data={data} />}
+      {bot === "posting" && <PostingPanel o={o} data={data} editable={editable} setBatch={setBatch} />}
       {bot === "editor" && <StandardsPanel canEdit={canBrand} onSaved={() => void onChange()} onDirty={onDirty} />}
     </>
   );
@@ -1796,13 +1812,75 @@ function CheckerPanel({ o, data, editable, onChange }: { o: Overview; data: Batc
   );
 }
 
-function PostingPanel({ o, data }: { o: Overview; data: BatchData | null }) {
+/**
+ * Where this batch's posts go. Saved as soon as it's changed. Each post still skips a chosen platform it can't go to
+ * (the Checker Bot lists those), and posts sent straight to the schedule skip platforms that aren't connected yet.
+ */
+function BatchPlatforms({ data, editable, setBatch }: { data: BatchData; editable: boolean; setBatch: (d: BatchData) => void }) {
+  const toast = useToast();
+  const conn = useConnectedPlatforms();
+  const [busy, setBusy] = useState(false);
+  const current = data.platforms ?? ["facebook"];
+  const locked = !editable || !!data.run || busy;
+  async function save(next: PlatformKey[] | null) {
+    setBusy(true);
+    try {
+      const d = await api<BatchData>(`/bots/batches/${data.batch.id}`, { method: "PATCH", body: { platforms: next } });
+      setBatch(d);
+      toast.ok(next ? "Platforms saved for this batch" : "This batch uses the default platforms again", "Run the Checker Bot again to see which posts skip a platform.");
+    } catch (e) {
+      toast.err("Couldn't change the platforms", (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const toggle = (p: PlatformKey) => {
+    const next = current.includes(p) ? current.filter((x) => x !== p) : PLATFORM_KEYS.filter((k) => k === p || current.includes(k));
+    if (next.length) void save(next);
+  };
+  return (
+    <div className="stackv" style={{ gap: 8 }}>
+      <p className="label mb0">This batch posts to</p>
+      <div className="sa-defaults" role="group" aria-label="Platforms for this batch">
+        {PLATFORM_KEYS.map((p) => {
+          const on = current.includes(p);
+          const notConnected = conn.data && !conn.data.connected[p];
+          return (
+            <label key={p} className={`sa-default ${on ? "on" : ""}`}>
+              <input type="checkbox" checked={on} disabled={locked || (on && current.length === 1)} onChange={() => toggle(p)} />
+              <PlatformIcon p={p} size={20} />
+              <span>
+                {PLATFORM[p].short}
+                {notConnected && <small>Not connected</small>}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      <p className="note mt0">
+        {data.usesDefaults ? "These are the default platforms (Settings → Social accounts). " : "Chosen for this batch. "}
+        Each post skips a platform it can't go to, like YouTube without a video; the Checker Bot lists those.
+        {!data.usesDefaults && editable && (
+          <>
+            {" "}
+            <button type="button" className="linkish" disabled={locked} onClick={() => void save(null)}>
+              Use the default platforms
+            </button>
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
+function PostingPanel({ o, data, editable, setBatch }: { o: Overview; data: BatchData | null; editable: boolean; setBatch: (d: BatchData) => void }) {
   const done = (data?.items ?? []).filter(handed);
   return (
     <div className="stackv" style={{ gap: 14 }}>
+      {data && <BatchPlatforms data={data} editable={editable} setBatch={setBatch} />}
       <p className="small mt0">
         I turn every post that passes the checks into a real post in <Link to="/posts">Posts and approvals</Link>, with its caption, hashtags, image or video and planned time. The posts are authored by whoever hands them
-        off, so another manager approves each one (you can't approve posts you handed off). It's then published at its time (to the Facebook Page, plus any other platforms ticked on the post), with retries if a platform has a hiccup.
+        off, so another manager approves each one (you can't approve posts you handed off). It's then published at its time on the platforms chosen above, with retries if a platform has a hiccup.
       </p>
       {o.canScheduleDirectly && <p className="small muted mt0">As an administrator you can also approve and schedule in one go, for posts with no warnings.</p>}
       {o.dryRun && <Alert tone="info">Test mode is on, so nothing is sent to any platform.</Alert>}

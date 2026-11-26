@@ -33,6 +33,7 @@ import {
 } from "../services/bots.js";
 import { isTimeZone } from "../services/bots.js";
 import { teamOverview } from "../services/teamReview.js";
+import { batchPlatforms, PLATFORM_IDS } from "../services/platforms/index.js";
 
 export const botsRouter = Router();
 
@@ -174,7 +175,7 @@ botsRouter.post("/batches", edit, async (req, res) => {
 botsRouter.get("/batches/:id", view, async (req, res) => {
   const id = intParam(req.params.id);
   const data = await loadBatch(id);
-  res.json({ ...data, schedule: scheduleOf(data.batch), run: await runState(id) });
+  res.json({ ...data, schedule: scheduleOf(data.batch), run: await runState(id), ...(await batchPlatforms(data.batch)) });
 });
 
 const scheduleBody = z.object({
@@ -197,17 +198,29 @@ const scheduleBody = z.object({
 
 botsRouter.patch("/batches/:id", edit, async (req, res) => {
   const id = intParam(req.params.id);
-  const b = parse(z.object({ name: z.string().trim().min(1).max(120).optional(), campaign_id: z.number().int().nullable().optional(), schedule: scheduleBody.optional() }), req.body);
+  const b = parse(
+    z.object({
+      name: z.string().trim().min(1).max(120).optional(),
+      campaign_id: z.number().int().nullable().optional(),
+      schedule: scheduleBody.optional(),
+      // The platforms this batch's posts go to; null goes back to the default platforms.
+      platforms: z.array(z.enum(PLATFORM_IDS)).min(1, "Pick at least one platform.").max(PLATFORM_IDS.length).nullable().optional(),
+    }),
+    req.body,
+  );
   if (b.schedule?.days === "custom" && !b.schedule.customDays.length) throw badRequest("Pick at least one day.");
   if (b.schedule && b.schedule.windowEnd < b.schedule.windowStart) throw badRequest("The posting window has to end after it starts.");
   await loadBatch(id);
-  if (b.schedule) await assertNotRunning(id);
+  if (b.schedule || "platforms" in b) await assertNotRunning(id);
+  // New platforms make the last check out of date (which posts skip which platform changes).
   await q(
-    `UPDATE bot_batches SET name=COALESCE($2,name), campaign_id=CASE WHEN $3 THEN $4 ELSE campaign_id END, schedule=COALESCE($5,schedule), updated_at=now() WHERE id=$1`,
-    [id, b.name ?? null, "campaign_id" in b, b.campaign_id ?? null, b.schedule ? JSON.stringify(b.schedule) : null],
+    `UPDATE bot_batches SET name=COALESCE($2,name), campaign_id=CASE WHEN $3 THEN $4 ELSE campaign_id END, schedule=COALESCE($5,schedule),
+       platforms=CASE WHEN $6 THEN $7::text[] ELSE platforms END, checked_at=CASE WHEN $6 THEN NULL ELSE checked_at END, updated_at=now() WHERE id=$1`,
+    [id, b.name ?? null, "campaign_id" in b, b.campaign_id ?? null, b.schedule ? JSON.stringify(b.schedule) : null, "platforms" in b, b.platforms ?? null],
   );
+  if ("platforms" in b) await audit(req, "bots.batch_platforms", "bot_batch", id, { platforms: b.platforms ?? "defaults" });
   const data = await loadBatch(id);
-  res.json({ ...data, schedule: scheduleOf(data.batch), run: await runState(id) });
+  res.json({ ...data, schedule: scheduleOf(data.batch), run: await runState(id), ...(await batchPlatforms(data.batch)) });
 });
 
 botsRouter.delete("/batches/:id", edit, async (req, res) => {

@@ -38,3 +38,6 @@
 .office-wrap { position: relative; }
 .office-zoom { position: absolute; top: 14px; right: 14px; box-shadow: 0 4px 14px rgba(20,20,40,.15); }
 @media (max-width: 760px) { .office-zoom { top: 8px; right: 8px; height: 30px; padding: 0 12px; font-size: 12px; } }
+.hand-pf { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.hand-pf-item { display: inline-flex; align-items: center; gap: 4px; font-weight: 500; color: var(--ink-2); }
+.linkish:disabled { opacity: .5; cursor: default; }

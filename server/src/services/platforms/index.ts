@@ -21,10 +21,20 @@ export const isPlatform = (v: unknown): v is PlatformId => typeof v === "string"
  * Never empty: Facebook if nothing fits.
  */
 export async function defaultPlatformsFor(post: RuleInput, opts: { connectedOnly?: boolean } = {}): Promise<PlatformId[]> {
-  const defaults = await getDefaultPlatforms();
+  return platformsThatFit(await getDefaultPlatforms(), post, opts);
+}
+
+/** Same rules for a chosen list (a bot batch's platforms). */
+export async function platformsThatFit(list: PlatformId[], post: RuleInput, opts: { connectedOnly?: boolean } = {}): Promise<PlatformId[]> {
   const connected = opts.connectedOnly && !env.PUBLISH_DRY_RUN ? await connectedPlatforms() : null;
-  const fit = defaults.filter((p) => !platformProblem(p, post) && (!connected || connected[p]));
+  const fit = list.filter((p) => !platformProblem(p, post) && (!connected || connected[p]));
   return fit.length ? fit : ["facebook"];
+}
+
+/** A batch's platforms: the ones chosen for it, or the defaults when none were chosen. */
+export async function batchPlatforms(batch: { platforms?: unknown }): Promise<{ platforms: PlatformId[]; usesDefaults: boolean }> {
+  const chosen = Array.isArray(batch.platforms) ? PLATFORM_IDS.filter((p) => (batch.platforms as string[]).includes(p)) : [];
+  return chosen.length ? { platforms: chosen, usesDefaults: false } : { platforms: await getDefaultPlatforms(), usesDefaults: true };
 }
 
 /** Which platforms can be posted to right now. */
