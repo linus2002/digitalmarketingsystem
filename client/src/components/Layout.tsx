@@ -365,6 +365,21 @@ export function Layout() {
             </button>
           )}
         </div>
+        {can("posts.edit") && (
+          <Link
+            to="/posts/new"
+            className="btn btn-primary side-create"
+            aria-current={loc.pathname === "/posts/new" ? "page" : undefined}
+            onMouseEnter={showTip("Create post")}
+            onMouseLeave={hideTip}
+            onFocus={showTip("Create post")}
+            onBlur={hideTip}
+            onClick={hideTip}
+          >
+            <Icon name="plus" />
+            <span>Create post</span>
+          </Link>
+        )}
         <nav className="nav" aria-label="Main">
           {groups.map((g, gi) => {
             const items = g.items.filter(visible);

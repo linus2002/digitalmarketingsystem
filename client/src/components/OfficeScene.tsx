@@ -301,7 +301,8 @@ const Floor = memo(function Floor() {
   );
 });
 
-function Walls({ t }: { t: number }) {
+/** Re-renders only when its (coarse) time changes: the wall animations are slow, so 10 updates a second is plenty. */
+const Walls = memo(function Walls({ t }: { t: number }) {
   const sign = 0.5 + 0.5 * Math.sin(t / 500);
   return (
     <g>
@@ -350,7 +351,7 @@ function Walls({ t }: { t: number }) {
       </g>
     </g>
   );
-}
+});
 
 // ---------------------------------------------------------------- things sorted by depth with the bots
 
@@ -713,6 +714,11 @@ function trim(s: string, n: number) {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+// Furniture that animates; everything else is built once and reused, so React skips it on every frame.
+const ANIMATED_FURNITURE = new Set(["bar", "tv", "arcade0", "arcade1", "ball"]);
+// Desk screens update about 15 times a second (typing lines, cursor, glow): enough to look alive, far fewer redraws.
+const DESK_TICK = 66;
+
 export function BotOffice({ views, selected, onSelect, motion }: { views: Record<BotName, BotView>; selected: BotName; onSelect: (b: BotName) => void; motion: boolean }) {
   const agents = useRef<Record<BotName, Agent>>(initialAgents());
   const viewsRef = useRef(views);
@@ -723,8 +729,13 @@ export function BotOffice({ views, selected, onSelect, motion }: { views: Record
   const cam = useRef<{ from: Box; to: Box; start: number; dur: number }>({ from: close.current, to: FULL, start: performance.now() + 1600, dur: 2600 });
   const [zoomed, setZoomed] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
-  // The glass walls never change: built once.
+  // The glass walls and still furniture never change: built once.
   const walls = useMemo(() => podWalls(), []);
+  const stillFurniture = useMemo(() => furniture(0, { ball: null }).filter((d) => !ANIMATED_FURNITURE.has(d.id)), []);
+  const deskCache = useRef<Partial<Record<BotName, { k: string; items: Drawable[] }>>>({});
+  // Labels glide to a new height instead of jumping when they make room for each other.
+  const labelLift = useRef<Partial<Record<BotName, number>>>({});
+  const lastFrame = useRef(t);
 
   useEffect(() => {
     if (!motion) {
@@ -743,8 +754,8 @@ export function BotOffice({ views, selected, onSelect, motion }: { views: Record
       last = now;
       if (visible && document.visibilityState === "visible") {
         step(agents.current, viewsRef.current, dt, now);
-        // About 20 frames a second is smooth enough for the office and much lighter than 60.
-        if (now - drawn > 50) {
+        // Up to 60 frames a second (not more on fast screens): each frame is cheap because still things are reused.
+        if (now - drawn > 15) {
           drawn = now;
           setT(now);
         }
@@ -811,8 +822,8 @@ export function BotOffice({ views, selected, onSelect, motion }: { views: Record
     swingOf[onCourt[0]] = f < 0.15 ? 1 - f / 0.15 : 0;
   }
 
-  const items: Drawable[] = [...furniture(t, { ball }), ...walls];
-  const labels: { b: BotName; x: number; y: number; text: string; tone: string }[] = [];
+  const items: Drawable[] = [...stillFurniture, ...furniture(t, { ball }).filter((d) => ANIMATED_FURNITURE.has(d.id)), ...walls];
+  const labels: { b: BotName; x: number; base: number; y: number; text: string; tone: string; compact: boolean }[] = [];
 
   for (const b of BOT_ORDER) {
     const a = agents.current[b];
@@ -822,7 +833,14 @@ export function BotOffice({ views, selected, onSelect, motion }: { views: Record
     const sitting = seated || (atSpot && a.spot!.sit !== undefined);
     const walking = a.path.length > 0;
     const working = v.state === "working" && seated;
-    items.push(...deskItems(b, working, t));
+    const tick = Math.floor(t / DESK_TICK);
+    const dk = `${working ? 1 : 0}|${tick}`;
+    let desk = deskCache.current[b];
+    if (!desk || desk.k !== dk) {
+      desk = { k: dk, items: deskItems(b, working, tick * DESK_TICK) };
+      deskCache.current[b] = desk;
+    }
+    items.push(...desk.items);
 
     const z = seated ? 0.62 : atSpot && a.spot!.sit !== undefined ? a.spot!.sit : 0;
     const [x, y] = iso(a.pos[0], a.pos[1], z);
@@ -868,16 +886,33 @@ export function BotOffice({ views, selected, onSelect, motion }: { views: Record
     const text =
       v.state === "off" || v.state === "working" || v.state === "attention" || seated ? v.task : a.phase === "returning" ? "Back to my desk" : walking ? "On my way" : (a.spot?.label ?? v.task);
     const tone = v.state === "attention" ? "#d93a32" : v.state === "working" ? "url(#holo)" : v.state === "off" ? "#8c8aa0" : "#2c2843";
-    labels.push({ b, x, y: top - 10, text, tone });
+    // A walking bot shows just its name: "On my way" adds little and the smaller tag crowds the others less.
+    labels.push({ b, x, base: top - 10, y: top - 10, text, tone, compact: walking && v.state !== "attention" });
   }
   items.sort((p, q) => p.key - q.key);
-  labels.sort((p, q) => p.y - q.y);
-  // Labels are about 44 px tall: move one up until it clears every label already placed near it.
-  const placed: { x: number; y: number; w: number }[] = [];
+  // Place the front-most labels first, right above their bots; labels further back move up to clear them.
+  labels.sort((p, q) => q.base - p.base);
+  const placed: { x: number; y: number; w: number; h: number }[] = [];
   for (const l of labels) {
-    const w = Math.max(84, trim(l.text, 28).length * 5.6 + 20, BOTS[l.b].name.length * 6.2 + 30);
-    for (let guard = 0; guard < 6 && placed.some((o) => Math.abs(o.x - l.x) < (o.w + w) / 2 + 4 && Math.abs(o.y - l.y) < 48); guard++) l.y -= 48;
-    placed.push({ x: l.x, y: l.y, w });
+    const nameW = BOTS[l.b].name.length * 6.2 + 30;
+    const w = l.compact ? nameW : Math.max(84, trim(l.text, 28).length * 5.6 + 20, nameW);
+    const h = l.compact ? 24 : 48;
+    for (let guard = 0; guard < 8; guard++) {
+      const hit = placed.find((o) => Math.abs(o.x - l.x) < (o.w + w) / 2 + 6 && l.y - h < o.y + 4 && o.y - o.h < l.y + 4);
+      if (!hit) break;
+      l.y = hit.y - hit.h - 4;
+    }
+    placed.push({ x: l.x, y: l.y, w, h });
+  }
+  // Ease each label's lift toward where it should be, so labels glide rather than jump while bots walk past each other.
+  const dt = Math.min(0.1, Math.max(0, (t - lastFrame.current) / 1000));
+  lastFrame.current = t;
+  for (const l of labels) {
+    const target = l.base - l.y;
+    const cur = labelLift.current[l.b];
+    const next = !motion || cur === undefined ? target : cur + (target - cur) * Math.min(1, dt * 9);
+    labelLift.current[l.b] = next;
+    l.y = l.base - next;
   }
 
   return (
@@ -900,17 +935,32 @@ export function BotOffice({ views, selected, onSelect, motion }: { views: Record
           </linearGradient>
         </defs>
         <Floor />
-        <Walls t={t} />
+        <Walls t={Math.floor(t / 100) * 100} />
         {items.map((d) => (
           <g key={d.id}>{d.el}</g>
         ))}
-        {labels.map(({ b, x, y, text, tone }) => {
+        {labels.map(({ b, x, y, base, text, tone, compact }) => {
           const label = trim(text, 28);
           const w = Math.max(84, label.length * 5.6 + 20);
           const nameW = BOTS[b].name.length * 6.2 + 30;
           const sel = selected === b;
+          // When a label had to move up to make room, a thin line still ties it to its bot.
+          const leader = base - y > 8 && <line x1={x} y1={y + 4} x2={x} y2={base + 2} stroke="#8c8aa0" strokeWidth="1.2" strokeDasharray="3 3" />;
+          if (compact)
+            return (
+              <g key={`label-${b}`} className="office-bot" onClick={() => onSelect(b)} aria-hidden="true">
+                {leader}
+                <rect x={x - nameW / 2} y={y - 20} width={nameW} height="20" rx="10" fill="#fff" stroke={sel ? "#7c5cff" : "#e1def0"} strokeWidth="1.5" />
+                <path d={`M${x - 5} ${y - 0.8} L${x} ${y + 4} L${x + 5} ${y - 0.8}z`} fill="#fff" />
+                <circle cx={x - nameW / 2 + 11} cy={y - 10} r="3.5" fill={BOTS[b].color} />
+                <text x={x + 5} y={y - 6} textAnchor="middle" className="office-name" style={{ fontSize: 11 }}>
+                  {BOTS[b].name}
+                </text>
+              </g>
+            );
           return (
             <g key={`label-${b}`} className="office-bot" onClick={() => onSelect(b)} aria-hidden="true">
+              {leader}
               <rect x={x - nameW / 2} y={y - 44} width={nameW} height="19" rx="9.5" fill="#fff" stroke={sel ? "#7c5cff" : "#e1def0"} strokeWidth="1.5" />
               <circle cx={x - nameW / 2 + 11} cy={y - 34.5} r="3.5" fill={BOTS[b].color} />
               <text x={x + 5} y={y - 30.5} textAnchor="middle" className="office-name" style={{ fontSize: 11 }}>
