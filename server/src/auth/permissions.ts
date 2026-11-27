@@ -20,6 +20,8 @@ export const PERMISSIONS = [
   "posts.edit",
   "posts.approve",
   "posts.schedule",
+  // Sign off post wording the compliance check blocks (restricted medicines, medical claims, missing required disclaimers)
+  "posts.compliance_signoff",
   "campaigns.manage",
   "reports.view",
   "logs.view",
@@ -60,6 +62,9 @@ const GRANTS: Record<Role, readonly Permission[]> = {
   marketer: [...marketingRead, "trends.refresh", "content.generate", "posts.edit"],
   // The pharmaceutical team reviews prescription, medical, regulatory and availability questions
   pharma_team: [
+    // They read posts to sign off wording the compliance check blocks; they can't edit, approve or schedule them.
+    "posts.view",
+    "posts.compliance_signoff",
     "leads.view",
     "leads.view_all",
     "leads.manage",

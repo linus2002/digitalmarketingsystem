@@ -16,6 +16,7 @@ import { requirePerm } from "../middleware/auth.js";
 import { graph } from "../services/meta.js";
 import { previewRetention, runRetention } from "../services/retention.js";
 import { aiStatus } from "../services/ai.js";
+import { getTracking, trackingBase, trackingProblem } from "../services/links.js";
 
 export const settingsRouter = Router();
 
@@ -37,12 +38,29 @@ settingsRouter.put("/brand", requirePerm("settings.brand"), async (req, res) => 
       bannedPhrases: list,
       requiredDisclaimer: z.string().max(400),
       alwaysHashtags: list,
+      restrictedMedicines: z.array(z.string().trim().min(2).max(120)).max(300).default([]),
+      topicDisclaimers: z
+        .array(z.object({ when: z.array(z.string().trim().min(2).max(80)).min(1).max(30), text: z.string().trim().min(3).max(400) }))
+        .max(20)
+        .default([]),
     }),
     req.body,
   );
   await setSetting("brand", b, req.user!.id);
   await audit(req, "settings.brand_updated", "settings", "brand");
   res.json({ brand: b });
+});
+
+// Tracked links in published posts (short links with UTM tags). Brand managers decide, like the other posting rules.
+settingsRouter.get("/tracking", requirePerm("settings.brand"), async (_req, res) => {
+  res.json({ tracking: await getTracking(), problem: trackingProblem(), base: trackingBase(), testMode: env.PUBLISH_DRY_RUN });
+});
+
+settingsRouter.put("/tracking", requirePerm("settings.brand"), async (req, res) => {
+  const b = parse(z.object({ enabled: z.boolean(), utm: z.boolean() }), req.body);
+  await setSetting("tracking.links", b, req.user!.id);
+  await audit(req, "settings.tracking_updated", "settings", "tracking.links", b);
+  res.json({ tracking: b, problem: trackingProblem(), base: trackingBase(), testMode: env.PUBLISH_DRY_RUN });
 });
 
 settingsRouter.get("/retention", requirePerm("settings.manage"), async (_req, res) => {

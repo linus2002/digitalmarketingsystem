@@ -9,7 +9,8 @@ export default defineConfig({
     // Fail instead of quietly moving to another port: CLIENT_ORIGIN in .env must match this address.
     strictPort: true,
     host: "127.0.0.1",
-    proxy: { "/api": { target: "http://127.0.0.1:4000", changeOrigin: false } },
+    // /r/<code> are the tracked short links in published posts (counted and redirected by the API).
+    proxy: { "/api": { target: "http://127.0.0.1:4000", changeOrigin: false }, "/r/": { target: "http://127.0.0.1:4000", changeOrigin: false } },
   },
   build: { outDir: "dist", sourcemap: false },
 });

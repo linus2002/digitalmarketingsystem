@@ -11,6 +11,9 @@ import { postBotStatus } from "../services/teamReview.js";
 import { toFacebookText } from "../lib/fbText.js";
 import { env } from "../config/env.js";
 import { platformProblem } from "../lib/platformRules.js";
+import { getBrand } from "../lib/settings.js";
+import { checkCompliance, complianceSig } from "../services/guardrails.js";
+import { linksForPost } from "../services/links.js";
 import { connectedPlatforms, defaultPlatformsFor, getDefaultPlatforms, PLATFORM_IDS, PLATFORM_LABEL, type PlatformId } from "../services/platforms/index.js";
 
 export const postsRouter = Router();
@@ -125,6 +128,28 @@ async function platformProblems(post: Row, rulesOnly = false): Promise<string[]>
   }
   return out;
 }
+/**
+ * The compliance check on the post as it would be published, and whether the pharmaceutical team signed off this exact
+ * wording. Blocking problems stop approval and scheduling unless it's signed off.
+ */
+async function compliance(post: Row) {
+  const brand = await getBrand();
+  const full = toFacebookText(composeMessage(post as { message: string; hashtags: string[] }));
+  const issues = checkCompliance(`${post.title}\n${full}`, brand);
+  const blocking = issues.filter((i) => i.level === "block");
+  const s = post.compliance_signoff as { sig?: string } | null;
+  const signoff = s ? { ...s, valid: s.sig === complianceSig(post) } : null;
+  return { issues, blocking: blocking.length, signoff, cleared: !blocking.length || !!signoff?.valid };
+}
+async function requireCompliant(post: Row) {
+  const c = await compliance(post);
+  if (c.cleared) return;
+  const list = c.issues.filter((i) => i.level === "block").map((i) => i.text);
+  throw badRequest(
+    `The compliance check blocks this post: ${list.join(" ")} Fix the wording, or ask the pharmaceutical team to sign it off${c.signoff ? " again (the text changed after their sign-off)" : ""}.`,
+  );
+}
+
 async function requirePlatformsReady(post: Row) {
   const problems = await platformProblems(post);
   if (problems.length) throw badRequest(`This post can't go out yet: ${problems.join(" ")} Fix it, or take that platform off the post.`);
@@ -317,12 +342,14 @@ postsRouter.get("/:id/bots", requirePerm("posts.view"), async (req, res) => {
 postsRouter.get("/:id", requirePerm("posts.view"), async (req, res) => {
   const id = intParam(req.params.id);
   const post = await load(id);
-  const [reviews, logs, stats] = await Promise.all([
+  const [reviews, logs, stats, check, links] = await Promise.all([
     q("SELECT r.*, u.name AS user_name FROM post_reviews r LEFT JOIN users u ON u.id=r.user_id WHERE post_id=$1 ORDER BY created_at DESC", [id]),
     q("SELECT * FROM publish_logs WHERE post_id=$1 ORDER BY created_at DESC LIMIT 50", [id]),
     post.fb_post_id ? one("SELECT * FROM fb_page_posts WHERE fb_post_id=$1", [post.fb_post_id]) : null,
+    compliance(post),
+    linksForPost(id),
   ]);
-  res.json({ post, reviews, logs, stats, preview: toFacebookText(composeMessage(post as { message: string; hashtags: string[] })) });
+  res.json({ post, reviews, logs, stats, compliance: check, links, preview: toFacebookText(composeMessage(post as { message: string; hashtags: string[] })) });
 });
 
 postsRouter.post("/", requirePerm("posts.edit"), async (req, res) => {
@@ -430,6 +457,52 @@ postsRouter.post("/:id/submit", requirePerm("posts.edit"), async (req, res) => {
   // Approvers, except the people who can't approve this one (its author and last editor, unless they're admins).
   const approvers = (await usersWithPerm("posts.approve", [req.user!.id])).filter((u) => u !== post.created_by && u !== post.last_edited_by);
   await notify(approvers, { kind: "post.review", title: "A post is waiting for your approval", body: `"${post.title}" from ${req.user!.name}`, link: `/posts/${id}` });
+  // Wording the compliance check blocks: the pharmaceutical team is asked to look at it straight away.
+  const check = await compliance(post);
+  if (!check.cleared) {
+    const team = (await usersWithPerm("posts.compliance_signoff", [req.user!.id])).filter((u) => !approvers.includes(u));
+    await notify(team, {
+      kind: "post.compliance",
+      level: "warn",
+      title: "A post needs your compliance sign-off",
+      body: `"${post.title}" from ${req.user!.name}: ${check.issues.filter((i) => i.level === "block").map((i) => i.text).slice(0, 2).join(" ")}`,
+      link: `/posts/${id}`,
+    });
+  }
+  res.json({ post: await load(id) });
+});
+
+/**
+ * The pharmaceutical team signs off wording the compliance check blocks. Covers this exact title, text, hashtags and
+ * link: any later edit needs a new sign-off. Doesn't approve the post: a manager still does that.
+ */
+postsRouter.post("/:id/compliance-signoff", requirePerm("posts.compliance_signoff"), async (req, res) => {
+  const id = intParam(req.params.id);
+  const { note } = parse(z.object({ note: z.string().trim().min(5, "Say why this wording is acceptable").max(1000) }), req.body);
+  const post = await load(id);
+  requireStatus(post, ["draft", "changes_requested", "in_review", "approved", "scheduled", "failed"], "signed off");
+  const check = await compliance(post);
+  if (!check.blocking) throw badRequest("The compliance check doesn't block this post, so it doesn't need a sign-off.");
+  const signoff = {
+    by: req.user!.id,
+    byName: req.user!.name,
+    at: new Date().toISOString(),
+    note,
+    sig: complianceSig(post),
+    issues: check.issues.filter((i) => i.level === "block").map((i) => i.text),
+  };
+  // Only if the post is still the version that was checked.
+  const rows = await q(
+    "UPDATE posts SET compliance_signoff=$2 WHERE id=$1 AND updated_at BETWEEN $3::timestamptz - interval '2 milliseconds' AND $3::timestamptz + interval '2 milliseconds' RETURNING id",
+    [id, JSON.stringify(signoff), post.updated_at],
+  );
+  if (!rows.length) throw conflict("This post changed in the meantime. Reload and check the new wording.");
+  await review(id, req, "comment", `Compliance sign-off: ${note}`);
+  await audit(req, "post.compliance_signoff", "post", id, { issues: signoff.issues });
+  await notify(
+    [post.created_by, post.last_edited_by].filter((u) => u && u !== req.user!.id),
+    { kind: "post.compliance", level: "good", title: "Compliance sign-off", body: `${req.user!.name} signed off the wording of "${post.title}": ${note}`, link: `/posts/${id}` },
+  );
   res.json({ post: await load(id) });
 });
 
@@ -444,6 +517,7 @@ postsRouter.post("/:id/approve", requirePerm("posts.approve"), async (req, res) 
   }
   if (b.scheduleAt && !userCan(req, "posts.schedule")) throw forbidden("You can approve but not schedule.");
   if (b.scheduleAt && new Date(b.scheduleAt).getTime() < Date.now() - 60_000) throw badRequest("Pick a time in the future.");
+  await requireCompliant(post);
   if (b.scheduleAt) await requirePlatformsReady(post);
   await tx(async (c) => {
     // Also require the version checked above, so an edit can't slip in between the check and the approval.
@@ -503,6 +577,7 @@ postsRouter.post("/:id/schedule", requirePerm("posts.schedule"), async (req, res
   requireStatus(post, allowed, "scheduled");
   if (!post.approved_by) throw conflict("This post needs approval before it can be scheduled.");
   if (new Date(scheduledAt).getTime() < Date.now() - 60_000) throw badRequest("Pick a time in the future.");
+  await requireCompliant(post);
   await requirePlatformsReady(post);
   await resetFailedTargets(id);
   await guarded(
@@ -523,6 +598,7 @@ postsRouter.post("/:id/publish-now", requirePerm("posts.schedule"), async (req, 
   const allowed = ["approved", "scheduled"];
   requireStatus(post, allowed, "published now");
   if (!post.approved_by) throw conflict("This post needs approval first.");
+  await requireCompliant(post);
   await requirePlatformsReady(post);
   await resetFailedTargets(id);
   await guarded("UPDATE posts SET status='scheduled', scheduled_at=now(), next_attempt_at=now(), attempts=0, last_error=NULL, updated_at=now()", id, allowed, [], "published now");

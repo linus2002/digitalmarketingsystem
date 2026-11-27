@@ -7,6 +7,7 @@ import { errMsg, log } from "../lib/logger.js";
 import { requirePerm } from "../middleware/auth.js";
 import { aiRateLimit } from "../middleware/aiLimit.js";
 import { createDigest, lastWeekStart, mondayOf, writingWeeks } from "../services/digest.js";
+import { trackingProblem } from "../services/links.js";
 
 export const reportsRouter = Router();
 
@@ -65,7 +66,11 @@ async function campaignRows(from: string, to: string) {
        count(p.id) FILTER (WHERE p.status='failed')::int AS failed,
        COALESCE(sum(f.reach),0)::int AS reach, COALESCE(sum(f.impressions),0)::int AS impressions,
        COALESCE(sum(f.reactions),0)::int AS reactions, COALESCE(sum(f.comments),0)::int AS comments,
-       COALESCE(sum(f.shares),0)::int AS shares, COALESCE(sum(f.clicks),0)::int AS clicks
+       COALESCE(sum(f.shares),0)::int AS shares, COALESCE(sum(f.clicks),0)::int AS clicks,
+       (SELECT count(*)::int FROM link_clicks lc JOIN short_links sl ON sl.id=lc.link_id
+        WHERE sl.campaign_id=c.id AND lc.clicked_at >= ${START} AND lc.clicked_at < ${END}) AS link_clicks,
+       (SELECT count(*)::int FROM leads ld JOIN short_links sl ON sl.id=ld.link_id
+        WHERE sl.campaign_id=c.id AND ld.created_at >= ${START} AND ld.created_at < ${END} AND ld.consent_given) AS inquiries
      FROM campaigns c
      LEFT JOIN posts p ON p.campaign_id=c.id AND p.published_at >= ${START} AND p.published_at < ${END}
      LEFT JOIN fb_page_posts f ON f.fb_post_id=p.fb_post_id
@@ -106,6 +111,37 @@ reportsRouter.get("/summary", requirePerm("reports.view"), async (req, res) => {
   res.json({ from, to, totals, attempts, weekly, campaigns: await campaignRows(from, to), leads });
 });
 
+/** Clicks on the tracked links in published posts, and the website inquiries they led to. */
+reportsRouter.get("/links", requirePerm("reports.view"), async (req, res) => {
+  const { from, to } = parseRange(req.query);
+  const IN_RANGE = `c.clicked_at >= ${START} AND c.clicked_at < ${END}`;
+  const [[totals], [leads], platforms, daily, posts] = await Promise.all([
+    q(`SELECT count(*)::int AS clicks, count(DISTINCT c.visitor)::int AS visitors, count(DISTINCT c.link_id)::int AS links FROM link_clicks c WHERE ${IN_RANGE}`, [from, to]),
+    q(`SELECT count(*)::int AS n FROM leads WHERE link_id IS NOT NULL AND consent_given AND created_at >= ${START} AND created_at < ${END}`, [from, to]),
+    q(
+      `SELECT l.platform, count(*)::int AS clicks, count(DISTINCT c.visitor)::int AS visitors
+       FROM link_clicks c JOIN short_links l ON l.id=c.link_id WHERE ${IN_RANGE} GROUP BY l.platform ORDER BY clicks DESC`,
+      [from, to],
+    ),
+    q(
+      `SELECT to_char(c.clicked_at AT TIME ZONE 'Asia/Manila', 'YYYY-MM-DD') AS day, count(*)::int AS clicks
+       FROM link_clicks c WHERE ${IN_RANGE} GROUP BY 1 ORDER BY 1`,
+      [from, to],
+    ),
+    q(
+      `SELECT p.id, p.title, p.published_at, cp.name AS campaign_name, f.reach,
+              count(c.id)::int AS clicks, count(DISTINCT c.visitor)::int AS visitors,
+              (SELECT count(*)::int FROM leads ld JOIN short_links s2 ON s2.id=ld.link_id
+               WHERE s2.post_id=p.id AND ld.consent_given AND ld.created_at >= ${START} AND ld.created_at < ${END}) AS inquiries
+       FROM link_clicks c JOIN short_links l ON l.id=c.link_id JOIN posts p ON p.id=l.post_id
+       LEFT JOIN campaigns cp ON cp.id=p.campaign_id LEFT JOIN fb_page_posts f ON f.fb_post_id=p.fb_post_id
+       WHERE ${IN_RANGE} GROUP BY p.id, cp.name, f.reach ORDER BY clicks DESC LIMIT 15`,
+      [from, to],
+    ),
+  ]);
+  res.json({ from, to, totals: { ...totals, inquiries: leads.n }, platforms, daily, posts, trackingProblem: trackingProblem() });
+});
+
 const csvCell = (v: unknown) => {
   const s = v == null ? "" : String(v);
   // Guard against spreadsheet formula injection
@@ -116,7 +152,7 @@ const csvCell = (v: unknown) => {
 reportsRouter.get("/campaigns.csv", requirePerm("reports.view"), async (req, res) => {
   const { from, to } = parseRange(req.query);
   const rows = await campaignRows(from, to);
-  const cols = ["name", "status", "start_date", "end_date", "published", "failed", "reach", "impressions", "reactions", "comments", "shares", "clicks"];
+  const cols = ["name", "status", "start_date", "end_date", "published", "failed", "reach", "impressions", "reactions", "comments", "shares", "clicks", "link_clicks", "inquiries"];
   const csv = [cols.join(","), ...rows.map((r) => cols.map((c) => csvCell(r[c] instanceof Date ? (r[c] as Date).toISOString().slice(0, 10) : r[c])).join(","))].join("\r\n");
   await audit(req, "report.exported", "campaigns", null, { from, to });
   res.setHeader("Content-Type", "text/csv; charset=utf-8");

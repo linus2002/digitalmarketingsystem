@@ -4,7 +4,7 @@ import { getBrand } from "../lib/settings.js";
 import { aiStatus } from "./ai.js";
 import { activity, DEFAULT_SCHEDULE, fmtPh, mediaProblem, type Issue } from "./bots.js";
 import { evaluate, failing, getStandards, meetsStandards, revise, type RuleResult } from "./editor.js";
-import { checkContent } from "./guardrails.js";
+import { checkCompliance, complianceSig } from "./guardrails.js";
 import { notify } from "./notifications.js";
 import { composeMessage } from "./publisher.js";
 import { toFacebookText } from "../lib/fbText.js";
@@ -19,7 +19,7 @@ export const WATCHED = ["in_review", "approved", "scheduled"];
 
 /** Fingerprint of everything the bots check. A post whose fingerprint differs from the saved one is checked again. */
 export const SIG = `md5(concat_ws('|', p.title, p.message, p.hashtags::text, coalesce(p.image_url,''), coalesce(p.video_url,''),
-  coalesce(p.media_id::text,''), coalesce(p.link_url,''), coalesce(p.scheduled_at::text,'')))`;
+  coalesce(p.media_id::text,''), coalesce(p.link_url,''), coalesce(p.scheduled_at::text,''), coalesce(p.compliance_signoff->>'sig','')))`;
 
 export interface LiveWork {
   bot: "editor" | "checker";
@@ -41,10 +41,16 @@ async function checkerIssues(post: Row): Promise<Issue[]> {
   const full = composeMessage(post as { message: string; hashtags: string[] });
   const issues: Issue[] = [];
   if (full.length > 4800) issues.push({ level: "warn", text: "The text (with its hashtags) is very long for a Facebook post. Shorter posts get read." });
-  for (const text of checkContent(`${post.title} ${full}`, brand.bannedPhrases)) issues.push({ level: "warn", text });
+  // Blocking compliance problems stop approval, unless the pharmaceutical team signed this exact wording off.
+  const signedOff = !!post.compliance_signoff && post.compliance_signoff.sig === complianceSig(post);
+  for (const c of checkCompliance(`${post.title}\n${full}`, brand))
+    issues.push(
+      c.level === "block" && !signedOff
+        ? { level: "bad", text: `${c.text} This blocks approval until it's fixed or the pharmaceutical team signs it off.` }
+        : { level: "warn", text: c.level === "block" ? `${c.text} (Signed off by the pharmaceutical team.)` : c.text },
+    );
   // **bold** is turned into bold letters when publishing; a ** left over after that has no partner and shows as typed.
   if (toFacebookText(full).includes("**")) issues.push({ level: "warn", text: 'A "**" mark has no partner, so it will show as typed. Bold text needs ** on both sides, like **this**.' });
-  if (brand.requiredDisclaimer && !full.includes(brand.requiredDisclaimer)) issues.push({ level: "warn", text: "The brand disclaimer isn't in this post." });
   // An uploaded file is sent to Facebook directly, so there's no link to check.
   if (!post.media_id) {
     const media = post.video_url ? mediaProblem(post.video_url, "video") : post.image_url ? mediaProblem(post.image_url, "image") : null;

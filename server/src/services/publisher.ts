@@ -7,6 +7,7 @@ import { BOT_NAMES, notify } from "./notifications.js";
 import { instagramImage, readMedia } from "./media.js";
 import { toFacebookText } from "../lib/fbText.js";
 import { captionFor, platformProblem } from "../lib/platformRules.js";
+import { trackLinks } from "./links.js";
 import { CONNECTORS, ctxFor, getCreds, PLATFORM_LABEL, PlatformError, publicMediaUrl, type PlatformId, type PublishMedia } from "./platforms/index.js";
 
 /** Minutes to wait before retry n (1-based): 1, 2, 4, 8, 16 … capped at 60. */
@@ -156,6 +157,9 @@ export async function publishOne(post: Row) {
       if (mediaError) throw mediaError;
       const problem = platformProblem(t.platform, { text: baseText, link, media: media && { kind: media.kind, mime: media.uploaded ? media.mime : null } });
       if (problem) throw new PlatformError(problem);
+      // Links become tracked short links (per platform, so clicks show where people came from). Also in Test mode,
+      // so the links can be tried before going live.
+      const tracked = await trackLinks(post, t.platform, baseText, link);
       if (env.PUBLISH_DRY_RUN) {
         // Still convert the image in test mode, so a picture Instagram can't take shows up now rather than when live.
         if (t.platform === "instagram" && media?.instagramReady) await media.instagramReady();
@@ -166,8 +170,8 @@ export async function publishOne(post: Row) {
         if (!(await conn.configured(creds))) throw new PlatformError(`${label} isn't connected. Connect it in Settings → Social accounts, or take it off this post.`);
         result = await conn.publish(ctxFor(t.platform, creds), {
           title: post.title,
-          text: captionFor(t.platform, baseText, link, !!media),
-          link,
+          text: captionFor(t.platform, tracked.text, tracked.link, !!media),
+          link: tracked.link,
           hashtags: post.hashtags ?? [],
           media,
         });

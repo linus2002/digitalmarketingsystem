@@ -5,6 +5,7 @@ import { useAuth } from "../lib/auth";
 import { ago, fmtCompact, fmtDate, fmtNum } from "../lib/format";
 import { useToast } from "../components/Toast";
 import { LineChart } from "../components/Chart";
+import { BestTimesBoard } from "../components/BestTimes";
 import { Alert, Button, Empty, KpiCard, LinkButton, LoadError, PageHead, Seg, Skeleton, Tag } from "../components/ui";
 
 interface SeriesData {
@@ -126,6 +127,9 @@ export function AnalyticsPage() {
               {s?.follows && <Tag tone="good">{fmtNum(s.follows.total)} new follows</Tag>}
             </div>
             {lineSeries.length ? <LineChart series={lineSeries} /> : <p className="muted small">Daily Page metrics will appear after the first sync.</p>}
+          </div>
+          <div className="mt24">
+            <BestTimesBoard />
           </div>
           <div className="table-wrap mt24">
             <div className="toolbar">

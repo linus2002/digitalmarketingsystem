@@ -25,7 +25,7 @@ async function chatJsonRetry<T>(opts: Parameters<typeof chatJson>[0]): Promise<T
 import { brandBrief, SAFETY } from "./brandPrompt.js";
 import { batchPlatforms, PLATFORM_LABEL, platformsThatFit } from "./platforms/index.js";
 import { platformProblem } from "../lib/platformRules.js";
-import { checkContent } from "./guardrails.js";
+import { checkCompliance } from "./guardrails.js";
 import { composeMessage } from "./publisher.js";
 
 // Five bots, each with one job, working on a batch of posts:
@@ -487,7 +487,9 @@ export async function checkBatch(batchId: number, userId: number | null) {
     if (!caption) issues.push({ level: "bad", text: item.caption_error ? `No caption yet: ${item.caption_error}` : "No caption yet." });
     if (full.length > 4800) issues.push({ level: "bad", text: "The caption (with its hashtags and disclaimer) is too long for a Facebook post." });
     // Everything that gets published is checked: the caption, the hashtags and the appended disclaimer.
-    for (const text of checkContent(`${item.title} ${full}`, brand.bannedPhrases)) issues.push({ level: "warn", text });
+    // Blocking compliance problems stop the hand-off, so a bot post never reaches approval with wording that needs sign-off.
+    for (const c of checkCompliance(`${item.title}\n${full}`, brand, { brandDisclaimer: false }))
+      issues.push({ level: c.level === "block" ? "bad" : "warn", text: c.fix ? `${c.text} ${c.fix}` : c.text });
     if (caption && brand.requiredDisclaimer && !full.includes(brand.requiredDisclaimer))
       issues.push({ level: "bad", text: 'The brand disclaimer is missing. Add it to the caption, or ask a marketing manager to turn on "Add the brand disclaimer" in Team rules.' });
     // An uploaded file is sent to Facebook directly: no link to check.

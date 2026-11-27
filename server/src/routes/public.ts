@@ -33,6 +33,8 @@ publicRouter.post("/inquiries", formLimiter, async (req, res) => {
         consent: z.literal(true, { errorMap: () => ({ message: "Please tick the box to agree, so we can reply" }) }),
         consent_version: z.string().min(1, "Missing consent version").max(40),
         website: z.string().max(0).optional(), // honeypot: must stay empty
+        // The tracked link they arrived from (/r/<code> adds it), so the inquiry counts for that post.
+        ref: z.string().regex(/^[A-Za-z0-9]{5,12}$/).optional().or(z.literal("")).catch(undefined),
       })
       .superRefine((v, ctx) => {
         if (v.contact_preference === "email" && !v.email) ctx.addIssue({ code: "custom", path: ["email"], message: "Enter your email address" });
@@ -50,9 +52,9 @@ publicRouter.post("/inquiries", formLimiter, async (req, res) => {
   const id = await tx(async (c) => {
     const row = await one(
       `INSERT INTO leads (source, name_enc, email_enc, phone_enc, inquiry_enc, medicine_name, destination_country, contact_preference,
-         status, consent_given, consent_at, consent_version, last_inbound_at, follow_up_at)
-       VALUES ('website',$1,$2,$3,$4,$5,$6,$7,'new',true,now(),$8, now(), now() + interval '1 day') RETURNING id`,
-      [encrypt(b.name), encrypt(email), encrypt(phone), encrypt(b.message), b.medicine_name, b.destination_country, b.contact_preference, consent.version],
+         status, consent_given, consent_at, consent_version, last_inbound_at, follow_up_at, link_id)
+       VALUES ('website',$1,$2,$3,$4,$5,$6,$7,'new',true,now(),$8, now(), now() + interval '1 day', (SELECT id FROM short_links WHERE code=$9)) RETURNING id`,
+      [encrypt(b.name), encrypt(email), encrypt(phone), encrypt(b.message), b.medicine_name, b.destination_country, b.contact_preference, consent.version, b.ref || null],
       c,
     );
     await q(

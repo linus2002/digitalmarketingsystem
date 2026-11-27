@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api, useLoad } from "../lib/api";
 import { bizToday, BUSINESS_TZ_LABEL, CAMPAIGN_STATUS, fmtCompact, fmtNum, SOURCE_LABEL } from "../lib/format";
 import { BarChart } from "../components/Chart";
-import { Empty, KpiCard, LoadError, PageHead, Skeleton, StatusTag, TextField } from "../components/ui";
+import { Alert, Empty, KpiCard, LoadError, PageHead, Skeleton, StatusTag, TextField } from "../components/ui";
 import { Icon } from "../components/Icons";
 
 interface Summary {
@@ -12,9 +12,18 @@ interface Summary {
   totals: { published: number; failed: number; reach: number; impressions: number; engagement: number; shares: number; comments: number };
   attempts: { ok: number; retried: number; errors: number };
   weekly: { week: string; posts: number; reach: number; engagement: number }[];
-  campaigns: { id: number; name: string; status: string; published: number; failed: number; reach: number; impressions: number; reactions: number; comments: number; shares: number; clicks: number }[];
+  campaigns: { id: number; name: string; status: string; published: number; failed: number; reach: number; impressions: number; reactions: number; comments: number; shares: number; clicks: number; link_clicks: number; inquiries: number }[];
   leads: { source: string; n: number; reviewed: number }[];
 }
+
+interface LinkReport {
+  totals: { clicks: number; visitors: number; links: number; inquiries: number };
+  platforms: { platform: string; clicks: number; visitors: number }[];
+  daily: { day: string; clicks: number }[];
+  posts: { id: number; title: string; campaign_name: string | null; reach: number | null; clicks: number; visitors: number; inquiries: number }[];
+  trackingProblem: string | null;
+}
+const PLATFORM_NAME: Record<string, string> = { facebook: "Facebook", instagram: "Instagram", twitter: "X", youtube: "YouTube", tiktok: "TikTok", linkedin: "LinkedIn" };
 
 /** A Philippine calendar day n days from today. */
 const phDay = (n: number) => {
@@ -34,6 +43,7 @@ export function ReportsPage() {
     () => (rangeErr ? Promise.resolve(null) : api<Summary>("/reports/summary", { query })),
     [query.from, query.to, rangeErr],
   );
+  const links = useLoad(() => (rangeErr ? Promise.resolve(null) : api<LinkReport>("/reports/links", { query })), [query.from, query.to, rangeErr]);
   const csvQs = new URLSearchParams(Object.entries(query).filter((e): e is [string, string] => !!e[1])).toString();
 
   const total = (data?.attempts.ok ?? 0) + (data?.attempts.errors ?? 0);
@@ -105,6 +115,7 @@ export function ReportsPage() {
               )}
             </div>
           </div>
+          {links.data && <LinkClicks r={links.data} />}
           <div className="table-wrap mt24">
             {data.campaigns.length ? (
               <div className="table-scroll">
@@ -119,7 +130,9 @@ export function ReportsPage() {
                       <th className="num">Reactions</th>
                       <th className="num">Comments</th>
                       <th className="num">Shares</th>
-                      <th className="num">Clicks</th>
+                      <th className="num" title="Clicks Facebook reports on the post">Facebook clicks</th>
+                      <th className="num" title="Clicks on the tracked links in the campaign's posts">Link clicks</th>
+                      <th className="num" title="Website inquiries from those links">Inquiries</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -140,6 +153,8 @@ export function ReportsPage() {
                         <td className="num">{fmtNum(c.comments)}</td>
                         <td className="num">{fmtNum(c.shares)}</td>
                         <td className="num">{fmtNum(c.clicks)}</td>
+                        <td className="num">{fmtNum(c.link_clicks)}</td>
+                        <td className="num">{fmtNum(c.inquiries)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -150,6 +165,91 @@ export function ReportsPage() {
             )}
           </div>
         </>
+      )}
+    </>
+  );
+}
+
+/** Clicks on the tracked links in published posts, and the website inquiries they brought in. */
+function LinkClicks({ r }: { r: LinkReport }) {
+  const t = r.totals;
+  return (
+    <>
+      <div className="spread mt24" style={{ marginBottom: 12 }}>
+        <h2 className="section">Link clicks</h2>
+        <span className="sub">Tracked links in published posts</span>
+      </div>
+      {r.trackingProblem && (
+        <div style={{ marginBottom: 16 }}>
+          <Alert tone="info" title="Links aren't being tracked yet">
+            {r.trackingProblem}
+          </Alert>
+        </div>
+      )}
+      <div className="grid g4">
+        <KpiCard strong title="Clicks" sub="People who opened a link" value={fmtCompact(t.clicks)} />
+        <KpiCard title="People" sub="Unique visitors a day" value={fmtCompact(t.visitors)} />
+        <KpiCard title="Inquiries" sub="From the website form" value={fmtNum(t.inquiries)} note={t.clicks ? `${((t.inquiries / t.clicks) * 100).toFixed(1)}% of clicks` : undefined} />
+        <KpiCard title="Links clicked" sub="Different tracked links" value={fmtNum(t.links)} />
+      </div>
+      <div className="grid g2 mt24">
+        <div className="board">
+          <h2 className="section" style={{ marginBottom: 12 }}>Clicks by day</h2>
+          {r.daily.length ? <BarChart data={r.daily.map((d) => ({ x: d.day, y: d.clicks }))} label="Link clicks by day" /> : <p className="muted small">No clicks in this period.</p>}
+        </div>
+        <div className="board">
+          <h2 className="section" style={{ marginBottom: 12 }}>By platform</h2>
+          {r.platforms.length ? (
+            <dl className="kv">
+              {r.platforms.map((p) => (
+                <div key={p.platform} style={{ display: "contents" }}>
+                  <dt>{PLATFORM_NAME[p.platform] ?? p.platform}</dt>
+                  <dd>
+                    <b>{fmtNum(p.clicks)}</b> <span className="sub">· {fmtNum(p.visitors)} people</span>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p className="muted small">No clicks in this period.</p>
+          )}
+        </div>
+      </div>
+      {r.posts.length > 0 && (
+        <div className="table-wrap mt24">
+          <div className="toolbar">
+            <h2 className="section">Posts that brought clicks</h2>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Post</th>
+                  <th className="num">Clicks</th>
+                  <th className="num">People</th>
+                  <th className="num" title="Clicks per person reached on Facebook">Click rate</th>
+                  <th className="num">Inquiries</th>
+                </tr>
+              </thead>
+              <tbody>
+                {r.posts.map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      <Link className="name" to={`/posts/${p.id}`}>
+                        {p.title}
+                      </Link>
+                      {p.campaign_name && <span className="sub">{p.campaign_name}</span>}
+                    </td>
+                    <td className="num">{fmtNum(p.clicks)}</td>
+                    <td className="num">{fmtNum(p.visitors)}</td>
+                    <td className="num">{p.reach ? `${((p.clicks / p.reach) * 100).toFixed(1)}%` : "—"}</td>
+                    <td className="num">{fmtNum(p.inquiries)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </>
   );

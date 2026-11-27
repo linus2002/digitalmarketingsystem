@@ -92,6 +92,8 @@ interface Brand {
   bannedPhrases: string[];
   requiredDisclaimer: string;
   alwaysHashtags: string[];
+  restrictedMedicines: string[];
+  topicDisclaimers: { when: string[]; text: string }[];
 }
 
 const lines = (v: string) => v.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -102,7 +104,18 @@ const toForm = (brand: Brand): Record<keyof Brand, string> => ({
   dontList: brand.dontList.join("\n"),
   bannedPhrases: brand.bannedPhrases.join("\n"),
   alwaysHashtags: brand.alwaysHashtags.join(" "),
+  restrictedMedicines: (brand.restrictedMedicines ?? []).join("\n"),
+  topicDisclaimers: (brand.topicDisclaimers ?? []).map((d) => `${d.when.join(", ")} => ${d.text}`).join("\n"),
 });
+
+/** "supplement, vitamin => No approved therapeutic claims." per line. Lines without "=>" are ignored. */
+const parseTopicDisclaimers = (v: string) =>
+  lines(v)
+    .map((l) => {
+      const [when, ...rest] = l.split("=>");
+      return { when: when.split(",").map((w) => w.trim()).filter((w) => w.length >= 2), text: rest.join("=>").trim() };
+    })
+    .filter((d) => d.when.length && d.text.length >= 3);
 
 function BrandTab({ onDirty }: { onDirty: (dirty: boolean) => void }) {
   const toast = useToast();
@@ -129,7 +142,10 @@ function BrandTab({ onDirty }: { onDirty: (dirty: boolean) => void }) {
     try {
       const r = await api<{ brand: Brand }>("/settings/brand", {
         method: "PUT",
-        body: { ...b, doList: lines(b!.doList), dontList: lines(b!.dontList), bannedPhrases: lines(b!.bannedPhrases), alwaysHashtags: b!.alwaysHashtags.split(/\s+/).filter(Boolean) },
+        body: { ...b, doList: lines(b!.doList), dontList: lines(b!.dontList), bannedPhrases: lines(b!.bannedPhrases), alwaysHashtags: b!.alwaysHashtags.split(/\s+/).filter(Boolean),
+          restrictedMedicines: lines(b!.restrictedMedicines),
+          topicDisclaimers: parseTopicDisclaimers(b!.topicDisclaimers),
+        },
       });
       const f = toForm(r.brand);
       setB(f);
@@ -160,12 +176,86 @@ function BrandTab({ onDirty }: { onDirty: (dirty: boolean) => void }) {
           <TextField label="Hashtags on every post" value={b.alwaysHashtags} onChange={set("alwaysHashtags")} />
         </div>
       </div>
+      <div className="grid g2">
+        <TextArea
+          label="Restricted medicines"
+          optional
+          value={b.restrictedMedicines}
+          onChange={set("restrictedMedicines")}
+          rows={5}
+          hint="One per line (brand or generic name). A post that names one can't be approved until the pharmaceutical team signs it off."
+        />
+        <TextArea
+          label="Disclaimers required by topic"
+          optional
+          value={b.topicDisclaimers}
+          onChange={set("topicDisclaimers")}
+          rows={5}
+          hint="One rule per line: words => disclaimer. Example: supplement, vitamin => No approved therapeutic claims. Use the exact wording your regulator requires. A post that mentions a topic without its disclaimer can't be approved."
+        />
+      </div>
       <div className="row" style={{ justifyContent: "flex-end" }}>
         {dirty && <span className="note mt0">Unsaved changes</span>}
         <Button variant="primary" loading={busy} disabled={!dirty} onClick={save}>
           Save guidelines
         </Button>
       </div>
+      <LinkTracking />
+    </div>
+  );
+}
+
+interface Tracking {
+  tracking: { enabled: boolean; utm: boolean };
+  problem: string | null;
+  base: string | null;
+  testMode: boolean;
+}
+
+/** Tracked links in published posts. Saved as soon as a switch changes. */
+function LinkTracking() {
+  const toast = useToast();
+  const { data, error, reload } = useLoad(() => api<Tracking>("/settings/tracking"), []);
+  const [busy, setBusy] = useState(false);
+  if (error) return <LoadError error={error} retry={reload} />;
+  if (!data) return null;
+  const save = async (patch: Partial<Tracking["tracking"]>) => {
+    setBusy(true);
+    try {
+      await api("/settings/tracking", { method: "PUT", body: { ...data.tracking, ...patch } });
+      await reload();
+      toast.ok("Link tracking saved");
+    } catch (e) {
+      toast.err("Couldn't save", (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="stackv" style={{ gap: 12, borderTop: "1px solid var(--rule)", paddingTop: 16 }}>
+      <div>
+        <h2 className="section">Link tracking</h2>
+        <p className="muted small" style={{ margin: "4px 0 0" }}>
+          When a post is published, its links become short links on this system{data.base ? ` (${data.base.replace(/^https?:\/\//, "")}/r/…)` : ""}. Clicks then show
+          on the post and in Reports. Instagram and TikTok captions aren't clickable, so their links are left as they are.
+        </p>
+      </div>
+      {data.problem && (
+        <Alert tone="warn" title="Links aren't tracked right now">
+          {data.problem}
+        </Alert>
+      )}
+      {!data.problem && data.testMode && (
+        <Alert tone="info" title="Test mode">
+          Short links use this computer's address so you can try them. Set PUBLIC_BASE_URL before going live, so people on the internet can open them.
+        </Alert>
+      )}
+      <Switch label="Track clicks on links in published posts" checked={data.tracking.enabled} onChange={(v) => !busy && void save({ enabled: v })} />
+      <Switch
+        label="Add UTM tags (utm_source, utm_medium, utm_campaign), so your website analytics see where visitors came from"
+        checked={data.tracking.utm}
+        onChange={(v) => !busy && void save({ utm: v })}
+      />
     </div>
   );
 }

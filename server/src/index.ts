@@ -33,6 +33,7 @@ import { commentsRouter } from "./routes/comments.js";
 import { editorRouter } from "./routes/editor.js";
 import { statusRouter } from "./routes/status.js";
 import { oauthCallbackRouter, platformsRouter, publicMediaRouter } from "./routes/platforms.js";
+import { redirectRouter } from "./routes/redirect.js";
 
 const app = express();
 if (env.TRUST_PROXY) app.set("trust proxy", 1);
@@ -61,6 +62,8 @@ app.use(cookieParser());
 
 // Files Instagram/TikTok download when posting, and the sign-in callbacks: no sign-in, checked inside.
 app.use("/api/public/media", publicMediaRouter);
+// Tracked short links in published posts: no sign-in (people click them on Facebook, X, LinkedIn…).
+app.use("/r", redirectRouter);
 app.use("/api/oauth", oauthCallbackRouter);
 app.use("/api/public", cors({ origin: env.PUBLIC_FORM_ORIGINS, methods: ["GET", "POST"] }), publicRouter);
 

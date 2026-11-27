@@ -14,6 +14,7 @@ import { toFacebookText } from "../lib/fbText";
 import { LeaveGuard } from "../components/LeaveGuard";
 import { PLATFORM, PLATFORM_KEYS, PlatformPicker, platformsOf, TargetList, type PlatformKey, type Target } from "../components/Platforms";
 import { platformProblem } from "../lib/platformRules";
+import { SuggestedTimes } from "../components/BestTimes";
 import "../styles/posts.css";
 
 // ---------------- Shared helpers for the posts pages ----------------
@@ -157,8 +158,26 @@ interface Detail {
   reviews: { id: number; decision: string; comment: string | null; user_name: string | null; created_at: string }[];
   logs: { id: number; attempt: number; status: string; message: string; created_at: string }[];
   stats: { reach: number | null; impressions: number | null; reactions: number; comments: number; shares: number; clicks: number | null; permalink_url: string | null; updated_at: string } | null;
+  /** The compliance check on the saved post, and the pharmaceutical team's sign-off (valid while the wording is unchanged). */
+  compliance: {
+    issues: ComplianceIssue[];
+    blocking: number;
+    cleared: boolean;
+    signoff: { byName: string; at: string; note: string; valid: boolean } | null;
+  };
+  links: { code: string; platform: PlatformKey; original_url: string; short_url: string; clicks: number; visitors: number; inquiries: number; last_click: string | null }[];
   preview: string;
 }
+
+export interface ComplianceIssue {
+  rule: string;
+  level: "block" | "warn";
+  text: string;
+  match?: string;
+  fix?: string;
+  add?: string;
+}
+type Check = { issues: ComplianceIssue[]; blocking: number; hasDisclaimer: boolean; disclaimer: string };
 
 type Form = { title: string; message: string; hashtags: string; image_url: string; video_url: string; media: UploadedMedia | null; image_prompt: string; link_url: string; campaign_id: string; planned: string; platforms: PlatformKey[] };
 
@@ -228,7 +247,9 @@ export function PostEditorPage() {
   const [botRevision, setBotRevision] = useState<number | null>(null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [check, setCheck] = useState<{ issues: string[]; hasDisclaimer: boolean; disclaimer: string } | null>(null);
+  const [check, setCheck] = useState<Check | null>(null);
+  const [signoffOpen, setSignoffOpen] = useState(false);
+  const [signoffNote, setSignoffNote] = useState("");
   const [schedAt, setSchedAt] = useState("");
   const [changesOpen, setChangesOpen] = useState(false);
   const [changesText, setChangesText] = useState("");
@@ -285,14 +306,15 @@ export function PostEditorPage() {
     const t = setTimeout(() => {
       const seq = ++checkSeq.current;
       if (!form.message.trim()) return setCheck(null);
-      api<{ issues: string[]; hasDisclaimer: boolean; disclaimer: string }>("/studio/check", { body: { text: `${form.title}\n${form.message}` } })
+      // Everything that gets published is checked: the title, the text and the hashtags.
+      api<Check>("/studio/check", { body: { text: `${form.title}\n${composePreview(form.message, splitTags(form.hashtags))}` } })
         .then((r) => {
           if (seq === checkSeq.current) setCheck(r);
         })
         .catch(() => undefined);
     }, 600);
     return () => clearTimeout(t);
-  }, [form.title, form.message]);
+  }, [form.title, form.message, form.hashtags]);
 
   useEffect(() => setVideoBroken(false), [form.video_url]);
 
@@ -449,6 +471,9 @@ export function PostEditorPage() {
   const videoUrl = form.video_url.trim();
   const imageUrl = form.image_url.trim();
   const schedIso = fromBizInput(schedAt);
+  const compliance = detail.data?.compliance;
+  /** Blocking compliance problems without a valid sign-off: approving and scheduling are refused. */
+  const complianceBlocked = !!compliance && !compliance.cleared;
 
   return (
     <>
@@ -551,33 +576,18 @@ export function PostEditorPage() {
               disabled={!editable}
             />
             <TextField label="Hashtags" optional value={form.hashtags} onChange={set("hashtags")} disabled={!editable} placeholder="#CancerAwareness #GetMeds" hint="Separate with spaces. They're added at the end unless already in the text." />
-            {check && (check.issues.length > 0 || !check.hasDisclaimer) && (
-              <Alert tone="warn" title="Brand and compliance check">
-                {check.issues.join(" ")}
-                {!check.hasDisclaimer && (
-                  <>
-                    {" "}
-                    The brand disclaimer is missing: “{check.disclaimer}”{" "}
-                    {editable && (
-                      <button
-                        type="button"
-                        className="btn btn-quiet btn-sm"
-                        onClick={() => {
-                          setForm((f) => ({ ...f, message: `${f.message.trim()}\n\n${check.disclaimer}` }));
-                          setDirty(true);
-                        }}
-                      >
-                        Add it
-                      </button>
-                    )}
-                  </>
-                )}
-              </Alert>
-            )}
-            {check && !check.issues.length && check.hasDisclaimer && (
-              <Alert tone="good" title="Passes the brand check">
-                No banned phrases, dosing or pressure wording found.
-              </Alert>
+            {check && (
+              <ComplianceCheck
+                issues={check.issues}
+                onAdd={
+                  editable
+                    ? (text) => {
+                        setForm((f) => ({ ...f, message: `${f.message.trim()}\n\n${text}` }));
+                        setDirty(true);
+                      }
+                    : undefined
+                }
+              />
             )}
             <MediaUpload
               value={form.media}
@@ -650,6 +660,15 @@ export function PostEditorPage() {
                 />
               )}
             </div>
+            {editable && status !== "scheduled" && (
+              <SuggestedTimes
+                selected={form.planned}
+                onPick={(v) => {
+                  setForm((f) => ({ ...f, planned: v }));
+                  setDirty(true);
+                }}
+              />
+            )}
           </div>
         </div>
 
@@ -708,6 +727,59 @@ export function PostEditorPage() {
               <p className="label">Where it is</p>
               <Steps steps={["Draft", "Review", "Approved", "Scheduled", "Published"]} current={stepIndex(status)} failed={status === "failed"} vertical />
               <div className="stackv mt24">
+                {compliance && compliance.blocking > 0 && !["published", "cancelled", "publishing"].includes(status) && (
+                  <div className="cc-signoff">
+                    {compliance.signoff?.valid ? (
+                      <Alert tone="good" icon="shield" title={`Wording signed off by ${compliance.signoff.byName}`}>
+                        {ago(compliance.signoff.at)}: “{compliance.signoff.note}”. Editing the title, text, hashtags or link needs a new sign-off.
+                      </Alert>
+                    ) : (
+                      <Alert tone="bad" icon="shield" title={`The compliance check blocks approval (${compliance.blocking})`}>
+                        {compliance.signoff
+                          ? `${compliance.signoff.byName} signed off an earlier version, but the wording changed since. It needs a new sign-off, or fix the problems.`
+                          : "Fix the problems listed under the text, or the pharmaceutical team can sign the wording off."}
+                      </Alert>
+                    )}
+                    {!compliance.signoff?.valid &&
+                      can("posts.compliance_signoff") &&
+                      (signoffOpen ? (
+                        <>
+                          <TextArea
+                            label="Why this wording is acceptable"
+                            value={signoffNote}
+                            onChange={(e) => setSignoffNote(e.target.value)}
+                            rows={3}
+                            maxLength={1000}
+                            autoFocus
+                            hint="Saved with the post and in the audit log. It covers this exact wording only."
+                          />
+                          <div className="row" style={{ justifyContent: "flex-end" }}>
+                            <Button variant="quiet" onClick={() => setSignoffOpen(false)}>
+                              Cancel
+                            </Button>
+                            <Button
+                              variant="primary"
+                              icon="shield"
+                              loading={busy === "signoff"}
+                              disabled={signoffNote.trim().length < 5 || dirty}
+                              onClick={async () => {
+                                if (await run("signoff", () => api(`/posts/${id}/compliance-signoff`, { body: { note: signoffNote.trim() } }), "Wording signed off")) {
+                                  setSignoffOpen(false);
+                                  setSignoffNote("");
+                                }
+                              }}
+                            >
+                              Sign off wording
+                            </Button>
+                          </div>
+                        </>
+                      ) : (
+                        <Button variant="secondary" icon="shield" disabled={dirty} onClick={() => setSignoffOpen(true)}>
+                          Sign off as the pharmaceutical team
+                        </Button>
+                      ))}
+                  </div>
+                )}
                 {testMode && ["approved", "scheduled", "publishing", "failed"].includes(status) && (
                   <Alert tone="warn" title="Test mode is on">
                     It will be marked published but not sent to any platform.
@@ -722,17 +794,18 @@ export function PostEditorPage() {
                   (canApproveThis ? (
                     <>
                       <TextField label={`Publish at (${BUSINESS_TZ_LABEL})`} type="datetime-local" value={schedAt} onChange={(e) => setSchedAt(e.target.value)} />
+                      <SuggestedTimes selected={schedAt} onPick={setSchedAt} />
                       {can("posts.schedule") && (
                         <Button
                           variant="primary"
                           loading={busy === "approve"}
-                          disabled={dirty || !schedIso}
+                          disabled={dirty || !schedIso || complianceBlocked}
                           onClick={() => void run("approve", () => api(`/posts/${id}/approve`, { body: { scheduleAt: schedIso } }), "Approved and scheduled")}
                         >
                           Approve and schedule
                         </Button>
                       )}
-                      <Button variant="secondary" loading={busy === "approve-only"} disabled={dirty} onClick={() => void run("approve-only", () => api(`/posts/${id}/approve`, { body: {} }), "Approved")}>
+                      <Button variant="secondary" loading={busy === "approve-only"} disabled={dirty || complianceBlocked} onClick={() => void run("approve-only", () => api(`/posts/${id}/approve`, { body: {} }), "Approved")}>
                         Approve only
                       </Button>
                       <Button variant="quiet" onClick={() => setChangesOpen(true)}>
@@ -752,16 +825,17 @@ export function PostEditorPage() {
                 {status === "approved" && can("posts.schedule") && (
                   <>
                     <TextField label={`Publish at (${BUSINESS_TZ_LABEL})`} type="datetime-local" value={schedAt} onChange={(e) => setSchedAt(e.target.value)} />
+                      <SuggestedTimes selected={schedAt} onPick={setSchedAt} />
                     <Button
                       variant="primary"
                       icon="cal"
                       loading={busy === "schedule"}
-                      disabled={!schedIso}
+                      disabled={!schedIso || complianceBlocked}
                       onClick={() => void run("schedule", () => api(`/posts/${id}/schedule`, { body: { scheduledAt: schedIso } }), "Scheduled")}
                     >
                       Schedule
                     </Button>
-                    <Button variant="secondary" onClick={() => setConfirm("publish")}>
+                    <Button variant="secondary" disabled={complianceBlocked} onClick={() => setConfirm("publish")}>
                       Publish now
                     </Button>
                   </>
@@ -774,7 +848,7 @@ export function PostEditorPage() {
                         : `That's ${ago(post.scheduled_at)}. Approved by ${post.approved_by_name ?? "—"}.`}
                     </Alert>
                     {can("posts.schedule") && (
-                      <Button variant="secondary" icon="send" onClick={() => setConfirm("publish")}>
+                      <Button variant="secondary" icon="send" disabled={complianceBlocked} onClick={() => setConfirm("publish")}>
                         Publish now
                       </Button>
                     )}
@@ -876,6 +950,34 @@ export function PostEditorPage() {
                 <div><small>Views</small><b>{fmtNum(detail.data.stats.impressions)}</b></div>
               </div>
               <p className="note">Synced {ago(detail.data.stats.updated_at)}</p>
+            </div>
+          )}
+
+          {!!detail.data?.links?.length && (
+            <div className="board">
+              <p className="label">Link clicks</p>
+              <div className="lk-list">
+                {detail.data.links.map((l) => (
+                  <div key={l.code} className="lk-row">
+                    <div>
+                      <b>{PLATFORM[l.platform]?.short ?? l.platform}</b>
+                      <div className="lk-url">
+                        <a href={l.short_url} target="_blank" rel="noreferrer">
+                          {l.short_url.replace(/^https?:\/\//, "")}
+                        </a>{" "}
+                        → {l.original_url.replace(/^https?:\/\//, "")}
+                      </div>
+                    </div>
+                    <div className="lk-n">
+                      <b>{fmtNum(l.clicks)}</b> click{l.clicks === 1 ? "" : "s"}
+                      <div className="sub">
+                        {fmtNum(l.visitors)} people{l.inquiries ? ` · ${l.inquiries} inquir${l.inquiries === 1 ? "y" : "ies"}` : ""}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="note">Clicks on the tracked links in this post. Link-preview robots aren't counted.</p>
             </div>
           )}
 
@@ -1057,5 +1159,45 @@ export function PostEditorPage() {
         </Modal>
       )}
     </>
+  );
+}
+
+/** The live compliance check while writing: blocking problems first, each with how to fix it. */
+function ComplianceCheck({ issues, onAdd }: { issues: ComplianceIssue[]; onAdd?: (text: string) => void }) {
+  const blocking = issues.filter((i) => i.level === "block").length;
+  if (!issues.length)
+    return (
+      <Alert tone="good" title="Passes the compliance check">
+        No banned words, medical claims, restricted medicines or missing disclaimers found.
+      </Alert>
+    );
+  return (
+    <Alert
+      tone={blocking ? "bad" : "warn"}
+      icon="shield"
+      title={
+        blocking
+          ? `Compliance check: ${blocking} problem${blocking === 1 ? "" : "s"} block${blocking === 1 ? "s" : ""} approval`
+          : `Compliance check: ${issues.length} thing${issues.length === 1 ? "" : "s"} for the reviewer to check`
+      }
+    >
+      {blocking > 0 && <span>Fix these before it can be approved, or ask the pharmaceutical team to sign the wording off.</span>}
+      <ul className="cc-list">
+        {issues.map((i, n) => (
+          <li key={`${i.rule}-${n}`} className="cc-item">
+            <Tag tone={i.level === "block" ? "bad" : "warn"}>{i.level === "block" ? "Must fix" : "Check"}</Tag>
+            <span>
+              {i.text}
+              {i.fix && <span className="cc-fix">{i.fix}</span>}
+              {i.add && onAdd && (
+                <button type="button" className="btn btn-quiet btn-sm" onClick={() => onAdd(i.add!)}>
+                  Add it
+                </button>
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Alert>
   );
 }

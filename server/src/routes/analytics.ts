@@ -6,6 +6,7 @@ import { audit } from "../lib/audit.js";
 import { getMetaPage, getSetting } from "../lib/settings.js";
 import { requirePerm } from "../middleware/auth.js";
 import { syncAnalytics } from "../services/analyticsSync.js";
+import { bestTimes } from "../services/bestTimes.js";
 import { checkConnection } from "../services/meta.js";
 
 export const analyticsRouter = Router();
@@ -62,6 +63,11 @@ analyticsRouter.get("/overview", requirePerm("analytics.view"), async (req, res)
   );
 
   res.json({ connected: page.source !== "none", pageId: page.pageId, pageName: page.pageName, lastSync, days, series, postTotals, topPosts });
+});
+
+/** Best days and times to post, from the Page's own results (Philippine time). The post editor uses it too. */
+analyticsRouter.get("/best-times", requirePerm("posts.view"), async (_req, res) => {
+  res.json(await bestTimes());
 });
 
 analyticsRouter.get("/posts", requirePerm("analytics.view"), async (_req, res) => {

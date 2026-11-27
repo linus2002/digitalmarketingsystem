@@ -12,6 +12,10 @@ export interface BrandSettings {
   bannedPhrases: string[];
   requiredDisclaimer: string;
   alwaysHashtags: string[];
+  /** Prescription-only or otherwise restricted medicines: naming one in a post blocks approval until the pharmaceutical team signs off. */
+  restrictedMedicines: string[];
+  /** Extra disclaimers a post must carry when it mentions a topic (e.g. food supplements). Missing one blocks approval. */
+  topicDisclaimers: { when: string[]; text: string }[];
 }
 
 export interface RetentionSettings {
@@ -51,6 +55,8 @@ export const DEFAULT_BRAND: BrandSettings = {
   bannedPhrases: ["cure", "cures", "miracle", "guaranteed", "100% effective", "no side effects", "risk-free", "best treatment", "instant results"],
   requiredDisclaimer: "For information only, not medical advice. Please talk to your doctor.",
   alwaysHashtags: ["#GetMeds"],
+  restrictedMedicines: [],
+  topicDisclaimers: [{ when: ["food supplement", "supplement", "supplements", "vitamin", "vitamins", "herbal"], text: "No approved therapeutic claims." }],
 };
 
 export const DEFAULT_RETENTION: RetentionSettings = { leadDays: 365, unconsentedDays: 7, auditDays: 730, aiLogDays: 180 };

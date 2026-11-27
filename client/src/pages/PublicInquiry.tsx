@@ -107,6 +107,8 @@ export function PublicInquiryPage() {
           phone: byEmail ? undefined : f.phone.trim(),
           message: f.message.trim() || undefined,
           website: f.website,
+          // Set by a tracked link in one of our posts, so the inquiry is counted for that post.
+          ref: new URLSearchParams(window.location.search).get("ref") || undefined,
           consent,
           consent_version: consentInfo.version,
         },

@@ -8,7 +8,7 @@ import { requirePerm, userCan } from "../middleware/auth.js";
 import { abortOnDisconnect, aiRateLimit, oneAtATime } from "../middleware/aiLimit.js";
 import { aiStatus, cancelledError, chat, chatJson, publicAiError, publicAiStatus, warmUp } from "../services/ai.js";
 import { brandBrief, SAFETY } from "../services/brandPrompt.js";
-import { checkContent } from "../services/guardrails.js";
+import { checkCompliance } from "../services/guardrails.js";
 
 export const studioRouter = Router();
 
@@ -185,7 +185,7 @@ studioRouter.post("/generate", requirePerm("content.generate"), aiRateLimit(12, 
     const limit = b.kind === "hashtags" ? 30 : b.count;
     const items = (Array.isArray(out.items) ? out.items : []).slice(0, limit).map((item) => {
       const text = Object.values(item).flat().filter((v) => typeof v === "string").join(" ");
-      const issues = checkContent(text, brand.bannedPhrases);
+      const issues = checkCompliance(text, brand, { brandDisclaimer: false }).map((i) => i.text);
       if (b.kind === "captions") {
         const caption = fitCaption(String(item.caption ?? ""));
         const tags = Array.isArray(item.hashtags) ? (item.hashtags as unknown[]).map(String) : [];
@@ -217,11 +217,12 @@ studioRouter.post("/generate", requirePerm("content.generate"), aiRateLimit(12, 
   }
 });
 
-/** Checks any text against the brand rules (used live in the post editor). */
+/** Checks text against the brand and compliance rules (used live in the post editor, before saving). */
 studioRouter.post("/check", requirePerm("posts.view"), async (req, res) => {
-  const { text } = parse(z.object({ text: z.string().max(5000) }), req.body);
+  const { text } = parse(z.object({ text: z.string().max(10000) }), req.body);
   const brand = await getBrand();
-  res.json({ issues: checkContent(text, brand.bannedPhrases), disclaimer: brand.requiredDisclaimer, hasDisclaimer: !brand.requiredDisclaimer || text.includes(brand.requiredDisclaimer) });
+  const issues = checkCompliance(text, brand);
+  res.json({ issues, blocking: issues.filter((i) => i.level === "block").length, disclaimer: brand.requiredDisclaimer, hasDisclaimer: !issues.some((i) => i.rule === "disclaimer") });
 });
 
 studioRouter.get("/history", requirePerm("content.generate"), async (req, res) => {
