@@ -1,6 +1,7 @@
 import { getMetaPage } from "../../lib/settings.js";
 import { checkConnection, graph, MetaError, publishToPage } from "../meta.js";
-import { PlatformError, sleep, type Connector } from "./core.js";
+import { errMsg } from "../../lib/logger.js";
+import { PlatformError, publicMediaUrl, sleep, type Connector } from "./core.js";
 
 // Facebook keeps its own section in Settings (Facebook connection); this wraps it as a connector.
 export const facebook: Connector = {
@@ -61,7 +62,7 @@ export const instagram: Connector = {
     { key: "accessToken", label: "Access token", secret: true, optional: true, help: "Leave empty to use the Facebook Page token." },
   ],
   setupHelp:
-    "Make the Instagram account a Business or Creator account and link it to the Facebook Page. The Meta app needs the instagram_basic and instagram_content_publish permissions. Uploaded files must be reachable on the internet: set PUBLIC_BASE_URL to this system's https address.",
+    "Make the Instagram account a Business or Creator account and link it to the Facebook Page. The Meta app needs the instagram_basic and instagram_content_publish permissions, plus instagram_manage_messages and instagram_manage_comments for direct messages and the Comments inbox. Uploaded files must be reachable on the internet: set PUBLIC_BASE_URL to this system's https address.",
   async configured(creds) {
     if (!creds.igUserId) return false;
     return !!(creds.accessToken || (await getMetaPage()).token);
@@ -77,10 +78,19 @@ export const instagram: Connector = {
     if (!m) throw new PlatformError("Instagram needs an image or a video.");
     if (!m.publicUrl)
       throw new PlatformError("Instagram downloads the file from a public web address. Set PUBLIC_BASE_URL to this system's https address, or use an image/video link instead of an upload.");
+    // Uploaded images go as the converted JPG copy (right shape and size); links and videos as they are.
+    let fileUrl = m.publicUrl;
+    if (m.uploaded && m.kind === "image" && m.instagramReady) {
+      try {
+        fileUrl = publicMediaUrl(await m.instagramReady()) ?? fileUrl;
+      } catch (err) {
+        throw new PlatformError(errMsg(err));
+      }
+    }
     const container = await graph<{ id: string }>(`${igId}/media`, {
       method: "POST",
       token,
-      body: m.kind === "video" ? { media_type: "REELS", video_url: m.publicUrl, caption: input.text, share_to_feed: true } : { image_url: m.publicUrl, caption: input.text },
+      body: m.kind === "video" ? { media_type: "REELS", video_url: fileUrl, caption: input.text, share_to_feed: true } : { image_url: fileUrl, caption: input.text },
       timeoutMs: 60_000,
     });
     // Instagram processes the file before it can be published (videos can take minutes).

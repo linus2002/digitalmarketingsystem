@@ -51,6 +51,14 @@ export const SYSTEM_TEMPLATES = [
   },
   { key: "bot.delete_ack", name: "Assistant: deletion request", category: "system", body: "We've received your request to delete your details. Our team will process it and confirm." },
   { key: "bot.human", name: "Assistant: person requested", category: "system", body: "Of course. I've asked a member of our team to take over this conversation. They'll reply here as soon as they can." },
+  {
+    key: "comment.private_reply",
+    name: "Comments: private reply",
+    category: "system",
+    body:
+      "Hi, thanks for your comment on our post. To keep your details private, we'll continue here. " +
+      "Reply to this message and our assistant will take down your inquiry for the {{business}} team.",
+  },
 ];
 
 export const AGENT_TEMPLATES = [

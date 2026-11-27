@@ -113,5 +113,5 @@ export const CAMPAIGN_STATUS: Record<string, { label: string; tone: Tone }> = {
   archived: { label: "Archived", tone: "mute" },
 };
 
-export const CONTACT_LABEL: Record<string, string> = { messenger: "Messenger", email: "Email", phone: "Phone call", whatsapp: "WhatsApp" };
-export const SOURCE_LABEL: Record<string, string> = { messenger: "Messenger", website: "Website form", manual: "Staff entry" };
+export const CONTACT_LABEL: Record<string, string> = { messenger: "Messenger", instagram: "Instagram", email: "Email", phone: "Phone call", whatsapp: "WhatsApp" };
+export const SOURCE_LABEL: Record<string, string> = { messenger: "Messenger", instagram: "Instagram", website: "Website form", manual: "Staff entry" };

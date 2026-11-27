@@ -79,5 +79,12 @@ statusRouter.get("/badges", async (req, res) => {
     leads = r?.n ?? 0;
   }
 
-  res.json({ review, leads });
+  // Comments that look like questions and nobody has answered yet (the Comments inbox's first tab).
+  let comments = 0;
+  if (userCan(req, "leads.view")) {
+    const r = await one<{ n: number }>("SELECT count(*)::int AS n FROM social_comments WHERE status='open' AND is_inquiry");
+    comments = r?.n ?? 0;
+  }
+
+  res.json({ review, leads, comments });
 });

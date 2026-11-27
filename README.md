@@ -138,6 +138,17 @@ Sign in with the admin account, then **remove `ADMIN_PASSWORD` from `.env`**. Ad
    In the Meta app → Messenger → Webhooks, set the callback URL to `https://<tunnel-host>/api/webhooks/meta`, the verify token to your `META_VERIFY_TOKEN`, and subscribe your Page to **`messages`** and **`messaging_postbacks`** only.
 6. Set `PUBLISH_DRY_RUN=false` and `MESSENGER_DRY_RUN=false`, then restart.
 
+### Instagram direct messages and the Comments inbox
+
+Instagram uses the same Page token and webhook. Connect the account first in **Settings → Social accounts → Instagram → Find from Facebook Page**.
+
+- **Permissions** (on top of the ones above): `instagram_basic`, `instagram_manage_messages` (direct messages), `instagram_manage_comments` (read, reply to and hide Instagram comments), `pages_read_user_content` and `pages_manage_engagement` (read, reply to and hide Facebook comments). Generate a new Page token after adding them.
+- **Webhook fields**: on the Page, also subscribe to **`feed`** (comments). In the Meta app → Instagram → Webhooks, use the same callback URL and verify token, and subscribe to **`messages`** and **`comments`**. In the Instagram app, turn on **Settings → Messages and story replies → Message controls → Connected tools → Allow access to messages**.
+- **Instagram DMs** go through the same assistant as Messenger (consent first, then medicine, country and contact preference) and appear under **Inquiries** with the Instagram icon.
+- **Comments** on the latest 25 posts on each platform are also checked every 10 minutes, so the inbox fills even without the webhook. Comments that look like questions are listed first; ones about prescriptions, medical, regulatory or availability topics are marked for the pharmaceutical team, and only they can answer those in public. **Reply privately** sends the approved *Comments: private reply* template (one per comment, within 7 days); if the person answers, the assistant takes over. Replying and hiding follow `MESSENGER_DRY_RUN`.
+
+Images for Instagram are converted when posted: PNG and GIF become JPG, images outside Instagram's allowed shape (4:5 to 1.91:1) get white margins rather than being cropped, and anything wider than 1440 px is scaled down. The original upload is still what Facebook and the other platforms get.
+
 Meta renames and retires Insights metrics between API versions. Metrics are requested one at a time, so an unavailable metric is skipped (and listed on the Analytics page) without breaking the rest. Adjust `META_PAGE_METRICS` / `META_POST_METRICS` and `META_GRAPH_VERSION` in `.env` when Meta announces changes.
 
 ## 4. Website inquiry form

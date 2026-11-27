@@ -6,6 +6,7 @@ import { publishDuePosts } from "./publisher.js";
 import { reviewTeamPosts } from "./teamReview.js";
 import { runRetention } from "./retention.js";
 import { warmUp } from "./ai.js";
+import { syncComments } from "./comments.js";
 import { maybeWeeklyDigest } from "./digest.js";
 import { isRefreshing, isSummarising, refreshTrends } from "./trends.js";
 import { one, q } from "../lib/db.js";
@@ -44,6 +45,13 @@ async function releaseStuckReplies() {
   if (rows.length) log.warn("Replies stuck in sending were returned to the review queue", { count: rows.length });
 }
 
+/** New comments on recent posts, every 10 minutes (also catches what the webhook missed, or all of it without one). */
+async function maybeSyncComments() {
+  const page = await getMetaPage();
+  if (!page.pageId || !page.token) return;
+  await syncComments();
+}
+
 async function maybeRunRetention() {
   const last = await getSetting<{ at?: string } | null>("retention.lastRun", null);
   if (last?.at && Date.now() - new Date(last.at).getTime() < 24 * 3_600_000) return;
@@ -74,6 +82,8 @@ export function startJobs() {
   later(safe("weekly digest", maybeWeeklyDigest), 60_000);
   later(safe("publisher", publishDuePosts), 3000);
   later(safe("retention", maybeRunRetention), 20_000);
+  timers.push(setInterval(safe("comments", maybeSyncComments), 10 * 60_000));
+  later(safe("comments", maybeSyncComments), 40_000);
   timers.push(setInterval(safe("stuck replies", releaseStuckReplies), 5 * 60_000));
   later(safe("stuck replies", releaseStuckReplies), 25_000);
   later(safe("team post checks", reviewTeamPosts), 8000);

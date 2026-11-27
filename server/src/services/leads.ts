@@ -131,7 +131,7 @@ export type WindowCheck = { ok: true; messagingType: "RESPONSE" | "MESSAGE_TAG";
  */
 export function messengerWindow(lead: Row, byHuman: boolean, systemAck = false): WindowCheck {
   if (isOptedOut(lead) && !systemAck) return { ok: false, reason: "This person opted out of messages." };
-  if (!lead.psid) return { ok: false, reason: "This inquiry has no Messenger conversation." };
+  if (!lead.psid) return { ok: false, reason: `This inquiry has no ${chatLabel(lead.source)} conversation.` };
   if (!lead.last_inbound_at) return { ok: false, reason: "We can only reply after the person messages the Page." };
   const hours = (Date.now() - new Date(lead.last_inbound_at).getTime()) / 3_600_000;
   if (hours < 24) return { ok: true, messagingType: "RESPONSE" };
@@ -140,9 +140,13 @@ export function messengerWindow(lead: Row, byHuman: boolean, systemAck = false):
     ok: false,
     reason: env.META_ENABLE_HUMAN_AGENT_TAG
       ? "More than 7 days since their last message. Contact them by their preferred method instead."
-      : "More than 24 hours since their last message, so Messenger won't allow a reply. Use their preferred contact method instead.",
+      : `More than 24 hours since their last message, so ${chatLabel(lead.source)} won't allow a reply. Use their preferred contact method instead.`,
   };
 }
+
+/** Inquiries that came in by Messenger or Instagram direct message: replies go back in that app. */
+export const isChatLead = (lead: Row) => lead.source === "messenger" || lead.source === "instagram";
+export const chatLabel = (source: string) => (source === "instagram" ? "Instagram" : "Messenger");
 
 /** Sends (Messenger) or logs (website/manual) an outbound message and records it. */
 export async function deliver(
@@ -182,7 +186,7 @@ export async function deliver(
     return { status: "blocked", error: reason };
   }
 
-  if (lead.source !== "messenger") {
+  if (!isChatLead(lead)) {
     // Website/manual inquiries: the team replies by email/phone outside this system; we keep the record.
     await save("logged", null, null);
     await q("UPDATE leads SET last_outbound_at=now(), last_activity_at=now(), updated_at=now() WHERE id=$1", [lead.id]);
@@ -194,6 +198,7 @@ export async function deliver(
     return { status: "blocked", error: w.reason };
   }
   try {
+    // Instagram direct messages are sent the same way, through the Page (the id says which app it goes to).
     const r = await sendMessengerText(lead.psid, text, { messagingType: w.messagingType, tag: w.tag, quickReplies: opts.quickReplies });
     await save("sent", null, r.messageId);
     await q("UPDATE leads SET last_outbound_at=now(), last_activity_at=now(), updated_at=now() WHERE id=$1", [lead.id]);

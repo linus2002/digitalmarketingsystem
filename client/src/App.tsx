@@ -24,6 +24,7 @@ import { UsersPage } from "./pages/Users";
 import { PublicInquiryPage } from "./pages/PublicInquiry";
 import { BotsPage } from "./pages/Bots";
 import { AccountPage } from "./pages/Account";
+import { CommentsPage } from "./pages/Comments";
 
 function NoAccess() {
   useDocTitle("No access");
@@ -152,6 +153,7 @@ export function App() {
         <Route path="logs/audit" element={<Guard perm="audit.view"><AuditLogPage /></Guard>} />
         <Route path="leads" element={<Guard perm="leads.view"><LeadsPage /></Guard>} />
         <Route path="leads/:id" element={<Guard perm="leads.view"><LeadDetailPage /></Guard>} />
+        <Route path="comments" element={<Guard perm="leads.view"><CommentsPage /></Guard>} />
         <Route path="templates" element={<Guard perm="templates.view"><TemplatesPage /></Guard>} />
         <Route path="settings" element={<Guard anyOf={["settings.manage", "settings.brand"]}><SettingsPage /></Guard>} />
         <Route path="users" element={<Guard perm="users.manage"><UsersPage /></Guard>} />

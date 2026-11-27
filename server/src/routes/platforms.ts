@@ -187,8 +187,10 @@ export const publicMediaRouter = Router();
 publicMediaRouter.get("/:name", async (req, res) => {
   const name = path.basename(String(req.params.name));
   if (!/^[0-9a-f-]{36}\.(jpg|png|gif|mp4|mov)$/i.test(name)) return void res.status(404).end();
+  // The original upload, or its Instagram-ready JPG copy.
   const row = await one(
-    `SELECT m.mime FROM media m WHERE m.storage_name=$1
+    `SELECT CASE WHEN m.ig_storage_name=$1 THEN 'image/jpeg' ELSE m.mime END AS mime FROM media m
+     WHERE (m.storage_name=$1 OR m.ig_storage_name=$1)
        AND EXISTS (SELECT 1 FROM posts p WHERE p.media_id = m.id AND p.status IN ('scheduled','publishing','published'))`,
     [name],
   );

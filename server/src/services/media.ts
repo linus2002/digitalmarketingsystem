@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import sharp from "sharp";
 import { one, q, type Row } from "../lib/db.js";
 import { HttpError, notFound } from "../lib/http.js";
 import { errMsg, log } from "../lib/logger.js";
@@ -64,6 +65,78 @@ export async function readMedia(id: number): Promise<{ data: Buffer; mime: strin
   return { data, mime: row.mime, kind: row.kind, name: row.original_name || row.storage_name };
 }
 
+// Instagram feed images: JPG only, width/height between 4:5 (portrait) and 1.91:1 (landscape), at most 1440 px wide.
+const IG_MIN_RATIO = 4 / 5;
+const IG_MAX_RATIO = 1.91;
+const IG_MAX_WIDTH = 1440;
+
+/** Converts an image to what Instagram accepts. Nothing is cut off: an image outside the allowed shape gets white
+ *  margins instead. Transparent areas become white, the photo is turned upright, and location/camera data is removed. */
+export async function toInstagramJpeg(input: Buffer): Promise<{ data: Buffer; width: number; height: number; padded: boolean }> {
+  // First frame only for GIFs; .rotate() with no angle applies the photo's EXIF orientation.
+  const upright = await sharp(input, { animated: false }).rotate().png().toBuffer({ resolveWithObject: true });
+  const { width: w, height: h } = upright.info;
+  if (!w || !h) throw new HttpError(422, "This image couldn't be read.");
+  const ratio = w / h;
+  let padX = 0;
+  let padY = 0;
+  if (ratio < IG_MIN_RATIO) padX = Math.ceil(h * IG_MIN_RATIO) - w; // too tall: margins left and right
+  else if (ratio > IG_MAX_RATIO) padY = Math.ceil(w / IG_MAX_RATIO) - h; // too wide: margins top and bottom
+  const white = { r: 255, g: 255, b: 255, alpha: 1 };
+  let img = sharp(upright.data).flatten({ background: white });
+  if (padX || padY) {
+    img = sharp(
+      await img
+        .extend({ left: Math.floor(padX / 2), right: Math.ceil(padX / 2), top: Math.floor(padY / 2), bottom: Math.ceil(padY / 2), background: white })
+        .png()
+        .toBuffer(),
+    );
+  }
+  let outW = w + padX;
+  let outH = h + padY;
+  if (outW > IG_MAX_WIDTH) {
+    outH = Math.round((outH * IG_MAX_WIDTH) / outW);
+    outW = IG_MAX_WIDTH;
+    img = img.resize(outW, outH, { fit: "fill" });
+  }
+  const data = await img.jpeg({ quality: 90, mozjpeg: true }).toBuffer();
+  return { data, width: outW, height: outH, padded: !!(padX || padY) };
+}
+
+/**
+ * The Instagram-ready copy of an uploaded image (made on first use, then reused). Returns its file name, which the
+ * public media address serves while the post is scheduled, being published or published.
+ */
+export async function instagramImage(mediaId: number): Promise<string> {
+  const row = await getMedia(mediaId);
+  if (row.kind !== "image") throw new HttpError(400, "Only images are converted for Instagram.");
+  if (row.ig_storage_name) {
+    const exists = await fs.stat(path.join(UPLOAD_DIR, path.basename(String(row.ig_storage_name)))).catch(() => null);
+    if (exists) return String(row.ig_storage_name);
+  }
+  const { data } = await readMedia(mediaId);
+  let out: Buffer;
+  try {
+    out = (await toInstagramJpeg(data)).data;
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
+    throw new HttpError(422, `This image couldn't be converted for Instagram: ${errMsg(err)}`);
+  }
+  const name = `${randomUUID()}.jpg`;
+  await fs.writeFile(path.join(UPLOAD_DIR, name), out);
+  // Replace only what we saw (nothing, or a copy whose file went missing). If another publish saved its copy in the
+  // meantime, use that one and remove ours.
+  const won = await q(
+    "UPDATE media SET ig_storage_name=$2 WHERE id=$1 AND ig_storage_name IS NOT DISTINCT FROM $3 RETURNING id",
+    [mediaId, name, row.ig_storage_name ?? null],
+  );
+  if (won.length) return name;
+  await fs.rm(path.join(UPLOAD_DIR, name), { force: true });
+  const other = await one<{ ig_storage_name: string | null }>("SELECT ig_storage_name FROM media WHERE id=$1", [mediaId]);
+  if (!other?.ig_storage_name) throw new HttpError(409, "The image changed while it was being converted. Try again.");
+  return other.ig_storage_name;
+}
+
 /** Uploads nobody used (no post or bot item points at them) are removed after a day. */
 export async function pruneOrphans(): Promise<void> {
   try {
@@ -71,9 +144,10 @@ export async function pruneOrphans(): Promise<void> {
       `DELETE FROM media m WHERE m.created_at < now() - interval '1 day'
          AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.media_id = m.id)
          AND NOT EXISTS (SELECT 1 FROM bot_items i WHERE i.media_id = m.id)
-       RETURNING storage_name`,
+       RETURNING storage_name, ig_storage_name`,
     );
-    await Promise.all(rows.map((r) => fs.rm(path.join(UPLOAD_DIR, path.basename(String(r.storage_name))), { force: true })));
+    const files = rows.flatMap((r) => [r.storage_name, r.ig_storage_name]).filter(Boolean);
+    await Promise.all(files.map((f) => fs.rm(path.join(UPLOAD_DIR, path.basename(String(f))), { force: true })));
   } catch (err) {
     log.warn("Couldn't clean up unused uploads", { error: errMsg(err) });
   }

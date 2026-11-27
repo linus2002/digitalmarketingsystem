@@ -4,7 +4,7 @@ import { one, q, type Row } from "../lib/db.js";
 import { errMsg, log } from "../lib/logger.js";
 import { MetaError } from "./meta.js";
 import { BOT_NAMES, notify } from "./notifications.js";
-import { readMedia } from "./media.js";
+import { instagramImage, readMedia } from "./media.js";
 import { toFacebookText } from "../lib/fbText.js";
 import { captionFor, platformProblem } from "../lib/platformRules.js";
 import { CONNECTORS, ctxFor, getCreds, PLATFORM_LABEL, PlatformError, publicMediaUrl, type PlatformId, type PublishMedia } from "./platforms/index.js";
@@ -76,6 +76,7 @@ export async function mediaFor(post: Row): Promise<PublishMedia | null> {
       uploaded: true,
       publicUrl: publicMediaUrl(row.storage_name),
       read: once(async () => (await readMedia(row.id)).data),
+      instagramReady: row.kind === "image" ? () => instagramImage(row.id) : undefined,
     };
   }
   const url: string | null = post.video_url || post.image_url || null;
@@ -156,6 +157,8 @@ export async function publishOne(post: Row) {
       const problem = platformProblem(t.platform, { text: baseText, link, media: media && { kind: media.kind, mime: media.uploaded ? media.mime : null } });
       if (problem) throw new PlatformError(problem);
       if (env.PUBLISH_DRY_RUN) {
+        // Still convert the image in test mode, so a picture Instagram can't take shows up now rather than when live.
+        if (t.platform === "instagram" && media?.instagramReady) await media.instagramReady();
         result = { id: `dryrun_${t.platform}_${post.id}_${Date.now()}`, raw: { dryRun: true } };
       } else {
         const conn = CONNECTORS[t.platform];

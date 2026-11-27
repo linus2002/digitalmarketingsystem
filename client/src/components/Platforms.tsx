@@ -9,7 +9,7 @@ export type { PlatformKey };
 export const PLATFORM_KEYS: PlatformKey[] = ["facebook", "instagram", "twitter", "youtube", "tiktok", "linkedin"];
 export const PLATFORM: Record<PlatformKey, { label: string; short: string; needs: string }> = {
   facebook: { label: "Facebook", short: "Facebook", needs: "Text, image, video or link" },
-  instagram: { label: "Instagram", short: "Instagram", needs: "Image (JPG) or video" },
+  instagram: { label: "Instagram", short: "Instagram", needs: "Image or video" },
   twitter: { label: "X (Twitter)", short: "X", needs: "Up to 280 characters, image optional" },
   youtube: { label: "YouTube", short: "YouTube", needs: "Video" },
   tiktok: { label: "TikTok", short: "TikTok", needs: "Video" },

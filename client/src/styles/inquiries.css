@@ -21,3 +21,13 @@
 
 /* Public form brand mark when there's no logo */
 .inq-mark { text-transform: uppercase; }
+
+/* Comments inbox */
+.cm-list { display: grid; gap: 12px; }
+.cm-card { display: grid; gap: 10px; }
+.cm-card.cm-done { opacity: .75; }
+.cm-head { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.cm-head .pf-ico { flex: none; margin-top: 2px; }
+.cm-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.cm-actions { gap: 8px; }
+.cm-reply { display: grid; gap: 10px; }

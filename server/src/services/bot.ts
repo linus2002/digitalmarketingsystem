@@ -6,11 +6,18 @@ import { fillTemplate, getConsent } from "../lib/settings.js";
 import { DELETE_REQUEST, HUMAN_REQUEST, NO, OPT_OUT, YES } from "./guardrails.js";
 import { addActivity, autoAssign, deliver, isOptedOut, reclassifyLead, systemText } from "./leads.js";
 
-// A deterministic, template-only Messenger assistant. It only answers people who message the Page,
+// A deterministic, template-only assistant for Messenger and Instagram direct messages. It only answers people who
+// message the Page or its linked Instagram account,
 // only asks for the medicine, the destination country and a contact preference, and never gives
 // medical, prescription, regulatory or availability answers: those go to the pharmaceutical team.
 
+/** The chat apps the assistant answers in. Both go through the Facebook Page (Instagram via the linked account). */
+export type ChatChannel = "messenger" | "instagram";
+export const CHAT_CHANNELS: readonly string[] = ["messenger", "instagram"];
+
 export interface InboundEvent {
+  channel: ChatChannel;
+  /** The person's id in that app (Messenger PSID or Instagram-scoped id). */
   psid: string;
   mid: string | null;
   text: string;
@@ -22,8 +29,9 @@ const CONSENT_REPLIES = [
   { title: "I agree", payload: "CONSENT_YES" },
   { title: "No thanks", payload: "CONSENT_NO" },
 ];
-const CONTACT_REPLIES = [
-  { title: "Messenger", payload: "CONTACT_MESSENGER" },
+/** "Reply here" is offered as the app they're writing in. */
+const contactReplies = (channel: string) => [
+  channel === "instagram" ? { title: "Instagram", payload: "CONTACT_INSTAGRAM" } : { title: "Messenger", payload: "CONTACT_MESSENGER" },
   { title: "Email", payload: "CONTACT_EMAIL" },
   { title: "Phone call", payload: "CONTACT_PHONE" },
   { title: "WhatsApp", payload: "CONTACT_WHATSAPP" },
@@ -51,7 +59,8 @@ const reload = (id: number) => one("SELECT * FROM leads WHERE id=$1", [id]) as P
 const queues = new Map<string, Promise<void>>();
 
 export function handleInbound(ev: InboundEvent): Promise<void> {
-  const prev = queues.get(ev.psid) ?? Promise.resolve();
+  const key = `${ev.channel}:${ev.psid}`;
+  const prev = queues.get(key) ?? Promise.resolve();
   const next = prev.then(async () => {
     try {
       await processInbound(ev);
@@ -59,9 +68,9 @@ export function handleInbound(ev: InboundEvent): Promise<void> {
       log.error("Messenger event failed", { error: errMsg(err) });
     }
   });
-  queues.set(ev.psid, next);
+  queues.set(key, next);
   void next.finally(() => {
-    if (queues.get(ev.psid) === next) queues.delete(ev.psid);
+    if (queues.get(key) === next) queues.delete(key);
   });
   return next;
 }
@@ -78,11 +87,11 @@ async function processInbound(ev: InboundEvent) {
     stored = await tx(async (c) => {
       const lead = await one(
         `INSERT INTO leads (source, psid, status, bot_state, last_inbound_at, last_activity_at)
-         VALUES ('messenger',$1,'awaiting_consent','consent',$2,$2)
-         ON CONFLICT (psid) DO UPDATE SET last_inbound_at=GREATEST(leads.last_inbound_at, EXCLUDED.last_inbound_at),
+         VALUES ($3,$1,'awaiting_consent','consent',$2,$2)
+         ON CONFLICT (source, psid) DO UPDATE SET last_inbound_at=GREATEST(leads.last_inbound_at, EXCLUDED.last_inbound_at),
            last_activity_at=GREATEST(leads.last_activity_at, EXCLUDED.last_activity_at), updated_at=now()
          RETURNING *, (xmax = 0) AS inserted`,
-        [ev.psid, at],
+        [ev.psid, at, ev.channel],
         c,
       );
       const ins = await q<{ id: number }>(
@@ -105,7 +114,7 @@ async function processInbound(ev: InboundEvent) {
   // Words that work at any point. Their confirmations are allowed out even though the person has opted out.
   if (OPT_OUT.test(text)) {
     await setState(lead.id, { status: "opted_out", opted_out_at: new Date(), bot_state: "opted_out", follow_up_at: null });
-    await q("INSERT INTO consent_records (lead_id, action, consent_version, channel) VALUES ($1,'withdrawn',$2,'messenger')", [lead.id, fresh.consent_version]);
+    await q("INSERT INTO consent_records (lead_id, action, consent_version, channel) VALUES ($1,'withdrawn',$2,$3)", [lead.id, fresh.consent_version, lead.source]);
     // Replies waiting for approval must never go out now.
     await q("UPDATE lead_messages SET status='blocked', error='The person opted out before this was approved.' WHERE lead_id=$1 AND status='pending_review'", [lead.id]);
     await addActivity(lead.id, "consent", "Opted out of messages (STOP)");
@@ -137,15 +146,16 @@ async function processInbound(ev: InboundEvent) {
     const consent = await getConsent();
     if (payload === "CONSENT_YES" || (!payload && YES.test(text))) {
       await setState(lead.id, { consent_given: true, consent_at: new Date(), consent_version: consent.version, status: "collecting", bot_state: "ask_medicine" });
-      await q("INSERT INTO consent_records (lead_id, action, consent_version, channel, text_shown) VALUES ($1,'granted',$2,'messenger',$3)", [
+      await q("INSERT INTO consent_records (lead_id, action, consent_version, channel, text_shown) VALUES ($1,'granted',$2,$4,$3)", [
         lead.id,
         consent.version,
         fillTemplate(consent.text, { business: env.BUSINESS_NAME }),
+        lead.source,
       ]);
       await addActivity(lead.id, "consent", `Consent given (version ${consent.version})`);
       await say(await reload(lead.id), "bot.ask_medicine");
     } else if (payload === "CONSENT_NO" || (!payload && NO.test(text))) {
-      await q("INSERT INTO consent_records (lead_id, action, consent_version, channel) VALUES ($1,'declined',$2,'messenger')", [lead.id, consent.version]);
+      await q("INSERT INTO consent_records (lead_id, action, consent_version, channel) VALUES ($1,'declined',$2,$3)", [lead.id, consent.version, lead.source]);
       // Keep nothing they wrote; the empty record is deleted by the retention job.
       await q("UPDATE lead_messages SET body_enc=NULL WHERE lead_id=$1", [lead.id]);
       await setState(lead.id, { status: "closed", bot_state: "declined", closed_at: new Date(), consent_given: false, consent_at: null });
@@ -176,15 +186,18 @@ async function processInbound(ev: InboundEvent) {
     case "ask_country":
       if (!text) return void (await say(fresh, "bot.ask_country"));
       await setState(lead.id, { destination_country: text.slice(0, 80), bot_state: "ask_contact" });
-      return void (await say(await reload(lead.id), "bot.ask_contact", CONTACT_REPLIES));
+      return void (await say(await reload(lead.id), "bot.ask_contact", contactReplies(lead.source)));
     case "ask_contact": {
-      const choice =
+      let choice =
         payload.replace("CONTACT_", "").toLowerCase() ||
-        (/mail/i.test(text) ? "email" : /whats/i.test(text) ? "whatsapp" : /phone|call/i.test(text) ? "phone" : /messenger|here|chat/i.test(text) ? "messenger" : "");
-      if (!["messenger", "email", "phone", "whatsapp"].includes(choice)) return void (await say(fresh, "bot.ask_contact", CONTACT_REPLIES));
-      await setState(lead.id, { contact_preference: choice, bot_state: choice === "email" ? "ask_email" : choice === "messenger" ? "complete" : "ask_phone" });
+        (/mail/i.test(text) ? "email" : /whats/i.test(text) ? "whatsapp" : /phone|call/i.test(text) ? "phone" : /messenger|insta|here|chat|\bdm\b/i.test(text) ? "chat" : "");
+      // "Reply here", in whichever app they're writing in, is stored as that app.
+      if (choice === "chat" || CHAT_CHANNELS.includes(choice)) choice = lead.source;
+      if (!["messenger", "instagram", "email", "phone", "whatsapp"].includes(choice)) return void (await say(fresh, "bot.ask_contact", contactReplies(lead.source)));
+      const inChat = CHAT_CHANNELS.includes(choice);
+      await setState(lead.id, { contact_preference: choice, bot_state: choice === "email" ? "ask_email" : inChat ? "complete" : "ask_phone" });
       if (choice === "email") return void (await say(fresh, "bot.ask_email"));
-      if (choice !== "messenger") return void (await say(fresh, "bot.ask_phone"));
+      if (!inChat) return void (await say(fresh, "bot.ask_phone"));
       return complete(lead.id);
     }
     case "ask_email":

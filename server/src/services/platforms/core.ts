@@ -36,6 +36,8 @@ export interface PublishMedia {
   /** A public https address the platform can download the file from, when there is one. */
   publicUrl: string | null;
   read(): Promise<Buffer>;
+  /** Uploaded images only: makes (once) the Instagram-ready JPG copy and returns its file name. */
+  instagramReady?(): Promise<string>;
 }
 
 export interface PublishInput {

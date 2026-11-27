@@ -29,8 +29,8 @@ export function platformProblem(p: PlatformKey, x: RuleInput): string | null {
   const len = lengthFor(p, caption);
   switch (p) {
     case "instagram":
+      // Uploaded PNG/GIF images are converted to JPG when posted, so any uploaded image is fine.
       if (!x.media) return "Instagram needs an image or a video.";
-      if (x.media.kind === "image" && x.media.mime && x.media.mime !== "image/jpeg") return "Instagram only takes JPG images. Use a JPG or a video.";
       break;
     case "youtube":
       if (x.media?.kind !== "video") return "YouTube needs a video.";

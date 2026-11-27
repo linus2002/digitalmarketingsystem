@@ -9,7 +9,7 @@ import { fillTemplate, getConsent } from "../lib/settings.js";
 import { requirePerm, userCan } from "../middleware/auth.js";
 import { aiRateLimit, oneAtATime } from "../middleware/aiLimit.js";
 import { CATEGORY_LABELS, INQUIRY_CATEGORIES, redactContactData } from "../services/guardrails.js";
-import { addActivity, autoAssign, deliver, isOptedOut, leadRef, messengerWindow, reclassifyLead, stripContact, templateVars } from "../services/leads.js";
+import { addActivity, autoAssign, deliver, isChatLead, isOptedOut, leadRef, messengerWindow, reclassifyLead, stripContact, templateVars } from "../services/leads.js";
 import { anonymizeLead } from "../services/retention.js";
 import { aiAllowedForInquiries, chatJson } from "../services/ai.js";
 
@@ -232,7 +232,7 @@ leadsRouter.get("/:id", requirePerm("leads.view"), async (req, res) => {
   if (reveal) await audit(req, "lead.contact_revealed", "lead", id);
   const messages = messagesDesc.slice(0, MAX_THREAD).reverse();
   const activities = activitiesDesc.slice(0, MAX_THREAD);
-  const window = lead.source === "messenger" ? messengerWindow(lead, true) : null;
+  const window = isChatLead(lead) ? messengerWindow(lead, true) : null;
   const inquiry = safeDecrypt(lead.inquiry_enc);
   const name = safeDecrypt(lead.name_enc);
   res.json({
@@ -256,7 +256,7 @@ const updateSchema = z.object({
   follow_up_at: z.string().datetime({ offset: true }).nullable().optional(),
   medicine_name: z.string().max(120).nullable().optional(),
   destination_country: z.string().max(80).nullable().optional(),
-  contact_preference: z.enum(["messenger", "email", "phone", "whatsapp"]).nullable().optional(),
+  contact_preference: z.enum(["messenger", "instagram", "email", "phone", "whatsapp"]).nullable().optional(),
   needs_review: z.boolean().optional(),
 });
 
@@ -301,7 +301,7 @@ leadsRouter.patch("/:id", requirePerm("leads.manage"), async (req, res) => {
   if (statusChanged && b.status === "closed") sets.push("closed_at=now()");
   if (statusChanged && lead.status === "closed" && b.status !== "closed") sets.push("closed_at=NULL"); // reopened
   if (statusChanged && b.status === "opted_out") {
-    sets.push("opted_out_at=now()", "bot_state=CASE WHEN source='messenger' THEN 'opted_out' ELSE bot_state END");
+    sets.push("opted_out_at=now()", "bot_state=CASE WHEN source IN ('messenger','instagram') THEN 'opted_out' ELSE bot_state END");
   }
   if (changes.includes("needs_review") && b.needs_review === false) sets.push("review_reasons='{}'");
 

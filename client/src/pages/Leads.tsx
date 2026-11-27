@@ -5,6 +5,7 @@ import { useAuth } from "../lib/auth";
 import { ago, CONTACT_LABEL, LEAD_STATUS, SOURCE_LABEL } from "../lib/format";
 import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icons";
+import { PlatformIcon } from "../components/Platforms";
 import { Alert, Avatar, Button, Check, Empty, KpiCard, LoadError, Modal, PageHead, SearchInput, Seg, SelectField, Skeleton, StatusTag, Tag, TextArea, TextField } from "../components/ui";
 import "../styles/inquiries.css";
 
@@ -191,7 +192,11 @@ export function LeadsPage() {
                     <td>
                       <div className="cell-who">
                         <span className="ico" style={{ width: 36, height: 36 }}>
-                          <Icon name={l.source === "messenger" ? "msg" : l.source === "website" ? "globe" : "phone"} />
+                          {l.source === "instagram" ? (
+                            <PlatformIcon p="instagram" size={20} />
+                          ) : (
+                            <Icon name={l.source === "messenger" ? "msg" : l.source === "website" ? "globe" : "phone"} />
+                          )}
                         </span>
                         <div>
                           <Link className="name" to={`/leads/${l.id}`} state={{ from: { to: `/leads${location.search}`, label: "Inquiries" } }}>

@@ -470,7 +470,7 @@ export async function checkBatch(batchId: number, userId: number | null) {
   const todo = pending(items);
   const booked = await bookedTimes(batchId);
   const gapMs = r.minGapMinutes * 60_000;
-  // The batch's platforms, and the real type of uploaded files (Instagram takes JPG images only).
+  // The batch's platforms, and the real type of uploaded files (checked against each platform's rules).
   const chosen = (await batchPlatforms(batch)).platforms;
   const mediaIds = todo.map((i) => i.media_id).filter(Boolean);
   const mimes = new Map(

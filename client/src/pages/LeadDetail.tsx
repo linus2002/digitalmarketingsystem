@@ -152,6 +152,9 @@ export function LeadDetailPage() {
   if (error && !data) return <LoadError error={error} retry={reload} />;
   if (!data) return null;
   const { lead, messages, activities, consents, replyWindow } = data;
+  // Messenger and Instagram direct messages: replies go back in that app.
+  const isChat = lead.source === "messenger" || lead.source === "instagram";
+  const chatName = lead.source === "instagram" ? "Instagram" : "Messenger";
   const canReveal = data.canReveal ?? true;
   const optedOut = lead.status === "opted_out" || !!lead.opted_out_at;
   // Placeholders we can't fill here stay as {{…}}: the server fills them when the reply is sent.
@@ -346,26 +349,26 @@ export function LeadDetailPage() {
             {can("leads.reply") && !closed && (
               <div className="mt24">
                 <hr className="split" />
-                {lead.source === "messenger" && appStatus?.messengerTestMode && (
+                {isChat && appStatus?.messengerTestMode && (
                   <div style={{ marginBottom: 12 }}>
                     <Alert tone="info" title="Test mode">
-                      Test mode: Messenger replies aren't really sent. They're recorded here as if they were.
+                      Test mode: {chatName} replies aren't really sent. They're recorded here as if they were.
                     </Alert>
                   </div>
                 )}
-                {lead.source === "messenger" && replyWindow && !replyWindow.ok && (
+                {isChat && replyWindow && !replyWindow.ok && (
                   <div style={{ marginBottom: 12 }}>
-                    <Alert tone="warn" title="Messenger won't allow a reply now">
+                    <Alert tone="warn" title={`${chatName} won't allow a reply now`}>
                       {replyWindow.reason}
                     </Alert>
                   </div>
                 )}
-                {lead.source === "messenger" && replyWindow?.ok && replyWindow.tag && (
+                {isChat && replyWindow?.ok && replyWindow.tag && (
                   <div style={{ marginBottom: 12 }}>
                     <Alert tone="info">Outside the 24-hour window: this reply is sent with Meta's human agent tag, so it must be written by a person.</Alert>
                   </div>
                 )}
-                {lead.source !== "messenger" && (
+                {!isChat && (
                   <div style={{ marginBottom: 12 }}>
                     <Alert tone="info">
                       Reply by {CONTACT_LABEL[lead.contact_preference ?? "email"]}, then log what you sent here so the team can see it.
@@ -393,7 +396,7 @@ export function LeadDetailPage() {
                 </div>
                 <div className="mt16">
                   <TextArea
-                    label={lead.source === "messenger" ? "Reply" : "What you sent"}
+                    label={isChat ? "Reply" : "What you sent"}
                     value={reply}
                     onChange={(e) => setReply(e.target.value)}
                     rows={4}
@@ -402,8 +405,8 @@ export function LeadDetailPage() {
                   />
                 </div>
                 <div className="row mt16" style={{ justifyContent: "flex-end" }}>
-                  <Button variant="primary" icon="send" loading={busy === "send"} disabled={!reply.trim() || (!!busy && busy !== "send") || (lead.source === "messenger" && !replyWindow?.ok)} onClick={send}>
-                    {lead.needs_review && !reviewer ? "Send for approval" : lead.source === "messenger" ? "Send on Messenger" : "Log reply"}
+                  <Button variant="primary" icon="send" loading={busy === "send"} disabled={!reply.trim() || (!!busy && busy !== "send") || (isChat && !replyWindow?.ok)} onClick={send}>
+                    {lead.needs_review && !reviewer ? "Send for approval" : isChat ? `Send on ${chatName}` : "Log reply"}
                   </Button>
                 </div>
               </div>

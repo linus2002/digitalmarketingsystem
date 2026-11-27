@@ -53,6 +53,7 @@ export async function runRetention() {
     at: new Date().toISOString(),
     anonymized: 0,
     deletedUnconsented: 0,
+    commentsDeleted: 0,
     auditDeleted: 0,
     aiLogsDeleted: 0,
     botActivityDeleted: 0,
@@ -68,7 +69,9 @@ export async function runRetention() {
       await anonymizeLead(l.id, `Retention policy: no activity for ${r.leadDays} days`, null);
       summary.anonymized++;
     }
-    summary.auditDeleted = (await q("DELETE FROM audit_logs WHERE created_at < now() - ($1 || ' days')::interval RETURNING id", [String(r.auditDays)])).length;
+    // Comments hold names and personal text too: kept as long as inquiries are.
+    summary.commentsDeleted = (await q("DELETE FROM social_comments WHERE commented_at < now() - ($1 || ' days')::interval RETURNING id", [String(r.leadDays)])).length;
+    summary.auditDeleted =(await q("DELETE FROM audit_logs WHERE created_at < now() - ($1 || ' days')::interval RETURNING id", [String(r.auditDays)])).length;
     summary.aiLogsDeleted = (await q("DELETE FROM ai_generations WHERE created_at < now() - ($1 || ' days')::interval RETURNING id", [String(r.aiLogDays)])).length;
     summary.botActivityDeleted = (await q("DELETE FROM bot_activity WHERE created_at < now() - ($1 || ' days')::interval RETURNING id", [String(r.aiLogDays)])).length;
   } catch (err) {

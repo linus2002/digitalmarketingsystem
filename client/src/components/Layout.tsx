@@ -215,7 +215,7 @@ export function Layout() {
       saveCollapsed(!c);
       return !c;
     });
-  const [counts, setCounts] = useState<{ review?: number; leads?: number }>({});
+  const [counts, setCounts] = useState<{ review?: number; leads?: number; comments?: number }>({});
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const sideRef = useRef<HTMLElement>(null);
   const menuBtn = useRef<HTMLButtonElement>(null);
@@ -223,8 +223,8 @@ export function Layout() {
   const firstRender = useRef(true);
 
   const loadBadges = useCallback(() => {
-    api<{ review: number; leads: number }>("/status/badges")
-      .then((r) => setCounts({ review: r.review, leads: r.leads }))
+    api<{ review: number; leads: number; comments?: number }>("/status/badges")
+      .then((r) => setCounts({ review: r.review, leads: r.leads, comments: r.comments }))
       .catch(() => undefined);
   }, []);
 
@@ -319,7 +319,8 @@ export function Layout() {
       title: "Inquiries",
       items: [
         { to: "/leads", label: "Inquiries", icon: "inbox", perm: "leads.view", count: counts.leads, countTo: "/leads?filter=review", countLabel: "waiting on you" },
-        { to: "/templates", label: "Reply templates", icon: "msg", perm: "templates.view" },
+        { to: "/comments", label: "Comments", icon: "msg", perm: "leads.view", count: counts.comments, countTo: "/comments", countLabel: "questions in comments" },
+        { to: "/templates", label: "Reply templates", icon: "doc", perm: "templates.view" },
       ],
     },
     {
